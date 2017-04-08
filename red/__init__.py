@@ -1,9 +1,8 @@
-from .app import Application
+from .app import start
 
 def main():
-    app = Application()
+    start(app_main)
+
+def app_main(app):
     loop = app.loop
-
     loop.call_later(2, app.exit)
-
-    app.run()
