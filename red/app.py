@@ -1,13 +1,18 @@
 """Full-screen ncurses application support."""
 import asyncio
+from concurrent.futures import CancelledError
 import curses
 
 import janus
 
+from . import event
+
+def run_until_exit(*args, **kwargs):
+    app = Application()
+    app.run_until_exit(*args, **kwargs)
+
 class Application:
     def __init__(self, loop=None):
-        self._screen = None
-
         # Initialise event loop
         if loop is None:
             loop = asyncio.get_event_loop()
@@ -17,40 +22,69 @@ class Application:
         self._exit_future = loop.create_future()
 
         # A thread-safe queue whereby events of interest are passed to the app
-        self.event_queue = janus.Queue(loop=loop)
+        self._event_queue = janus.Queue(loop=loop)
 
     def exit(self):
         """Schedule application exit."""
         self._exit_future.set_result(True)
 
-    def run(self, running_cb):
+    def _curses_event_loop(self, screen):
+        # Keep reading characters from the keyboard until we exit. Passed
+        # the curses screen.
+
+        # Raw mode & allow 100 millisecond timeout
+        curses.raw()
+        screen.timeout(100)
+
+        while not self._exit_future.done():
+            try:
+                ch = screen.get_wch()
+            except:
+                # No input
+                continue
+
+            event = curses_key_to_event(ch)
+            if event is not None:
+                self._event_queue.sync_q.put_nowait(event)
+
+    @asyncio.coroutine
+    def _event_loop(self, event_cb):
+        """Keep reading events from queue and passing them to event_cb."""
+        while True:
+            try:
+                event = yield from self._event_queue.async_q.get()
+            except CancelledError:
+                return
+            event_cb(event.type, **event.kwargs)
+
+    def run_until_exit(self, started_cb=None, event_cb=None):
         """Run the application to completion."""
-        # Curses read loop
-        def curses_init(screen):
-            self._screen = screen
 
-            def read_loop():
-                self._screen.timeout(100)
-                while not self._exit_future.done():
-                    ch = self._screen.getch()
-                    if ch == -1:
-                        continue
-                    print(ch)
+        # Function wrapped with curses.wrapper.
+        def f(screen):
+            # Schedule curses event loop
+            self.loop.run_in_executor(None, self._curses_event_loop, screen)
 
-            curses_loop = self.loop.run_in_executor(None, read_loop)
-            curses.raw()
+            # Schedule start callback if present
+            if started_cb:
+                self.loop.call_soon(lambda: started_cb(self))
 
-            if running_cb is not None:
-                self.loop.call_soon(lambda: running_cb(self))
+            # Schedule event loop
+            if event_cb is not None:
+                event_loop_task = self.loop.create_task(
+                    self._event_loop(event_cb))
+            else:
+                event_loop_task = None
 
+            # Wait until exit is signalled
             self.loop.run_until_complete(self._exit_future)
-            self.loop.run_until_complete(curses_loop)
-        curses.wrapper(curses_init)
-        self.loop.close()
+            if event_loop_task is not None:
+                event_loop_task.cancel()
+                self.loop.run_until_complete(event_loop_task)
 
-    def _curses_read_loop(self):
-        pass
+        curses.wrapper(f)
 
-def start(running_cb):
-    app = Application()
-    app.run(running_cb)
+def curses_key_to_event(key):
+    if isinstance(key, int):
+        return None
+    return event.Event(event.EventType.KEY_PRESS, { 'key': key })
