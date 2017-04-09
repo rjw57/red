@@ -55,7 +55,7 @@ class Application:
                 event = yield from self._event_queue.async_q.get()
             except CancelledError:
                 return
-            event_cb(event.type, **event.kwargs)
+            event_cb(self, event.type, **event.kwargs)
 
     def run_until_exit(self, started_cb=None, event_cb=None):
         """Run the application to completion."""
