@@ -12,11 +12,9 @@ def run_until_exit(*args, **kwargs):
     app.run_until_exit(*args, **kwargs)
 
 class Screen:
-    def __init__(self, app, curses_screen):
-        self._app = app
-        self._screen = curses_screen
-        self.line_count = curses.LINES
-        self.column_count = curses.COLS
+    def __init__(self, curses_screen):
+        self.win = curses_screen
+        self.line_count, self.column_count = self.win.getmaxyx()
 
 class EventType(enum.Enum):
     KEY_PRESS = 1
@@ -54,7 +52,7 @@ class Application:
                 # No input
                 continue
 
-            event = curses_key_to_event(ch)
+            event = curses_key_to_event(ch, screen)
             if event is not None:
                 self._event_queue.sync_q.put_nowait(event)
 
@@ -68,11 +66,6 @@ class Application:
                 return
             event_cb(self, type_, **kwargs)
 
-    def _terminal_resized(self, screen):
-        curses.update_lines_cols()
-        self._event_queue.async_q.put_nowait((
-            EventType.NEW_SCREEN, { 'screen': Screen(self, screen) }))
-
     def run_until_exit(self, started_cb=None, event_cb=None):
         """Run the application to completion."""
 
@@ -85,17 +78,16 @@ class Application:
             if started_cb:
                 self.loop.call_soon(lambda: started_cb(self))
 
+            # Poke screen into event loop
+            self._event_queue.async_q.put_nowait((
+                EventType.NEW_SCREEN, { 'screen': Screen(screen) }))
+
             # Schedule event loop
             if event_cb is not None:
                 event_loop_task = self.loop.create_task(
                     self._event_loop(event_cb))
             else:
                 event_loop_task = None
-
-            # Terminal resize handler
-            self.loop.add_signal_handler(
-                signal.SIGWINCH, self._terminal_resized, screen)
-            self._terminal_resized(screen)
 
             # Wait until exit is signalled
             self.loop.run_until_complete(self._exit_future)
@@ -107,7 +99,7 @@ class Application:
 
         curses.wrapper(f)
 
-def curses_key_to_event(key):
-    if isinstance(key, int):
-        return None
+def curses_key_to_event(key, screen):
+    if key == curses.KEY_RESIZE:
+        return EventType.NEW_SCREEN, { 'screen': Screen(screen) }
     return EventType.KEY_PRESS, { 'key': key }
