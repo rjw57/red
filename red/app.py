@@ -2,14 +2,17 @@
 import asyncio
 from concurrent.futures import CancelledError
 import curses
+import enum
 
 import janus
-
-from . import event
 
 def run_until_exit(*args, **kwargs):
     app = Application()
     app.run_until_exit(*args, **kwargs)
+
+class EventType(enum.Enum):
+    KEY_PRESS = 1
+    APP_EXIT = 2 # Takes no payload
 
 class Application:
     def __init__(self, loop=None):
@@ -52,10 +55,10 @@ class Application:
         """Keep reading events from queue and passing them to event_cb."""
         while True:
             try:
-                event = yield from self._event_queue.async_q.get()
+                type_, kwargs = yield from self._event_queue.async_q.get()
             except CancelledError:
                 return
-            event_cb(self, event.type, **event.kwargs)
+            event_cb(self, type_, **kwargs)
 
     def run_until_exit(self, started_cb=None, event_cb=None):
         """Run the application to completion."""
@@ -87,4 +90,4 @@ class Application:
 def curses_key_to_event(key):
     if isinstance(key, int):
         return None
-    return event.Event(event.EventType.KEY_PRESS, { 'key': key })
+    return EventType.KEY_PRESS, { 'key': key }

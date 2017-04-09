@@ -1,7 +1,6 @@
 import asyncio
 
-from .app import run_until_exit
-from .event import EventType
+from .app import run_until_exit, EventType
 
 class Editor:
     def __init__(self):
