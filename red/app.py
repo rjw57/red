@@ -3,6 +3,7 @@ import asyncio
 from concurrent.futures import CancelledError
 import curses
 import enum
+import signal
 
 import janus
 
@@ -10,9 +11,16 @@ def run_until_exit(*args, **kwargs):
     app = Application()
     app.run_until_exit(*args, **kwargs)
 
+class Screen:
+    def __init__(self, app, curses_screen):
+        self._app = app
+        self._screen = curses_screen
+        self.line_count = curses.LINES
+        self.column_count = curses.COLS
+
 class EventType(enum.Enum):
     KEY_PRESS = 1
-    APP_EXIT = 2 # Takes no payload
+    NEW_SCREEN = 2
 
 class Application:
     def __init__(self, loop=None):
@@ -60,6 +68,11 @@ class Application:
                 return
             event_cb(self, type_, **kwargs)
 
+    def _terminal_resized(self, screen):
+        curses.update_lines_cols()
+        self._event_queue.async_q.put_nowait((
+            EventType.NEW_SCREEN, { 'screen': Screen(self, screen) }))
+
     def run_until_exit(self, started_cb=None, event_cb=None):
         """Run the application to completion."""
 
@@ -79,11 +92,18 @@ class Application:
             else:
                 event_loop_task = None
 
+            # Terminal resize handler
+            self.loop.add_signal_handler(
+                signal.SIGWINCH, self._terminal_resized, screen)
+            self._terminal_resized(screen)
+
             # Wait until exit is signalled
             self.loop.run_until_complete(self._exit_future)
             if event_loop_task is not None:
                 event_loop_task.cancel()
                 self.loop.run_until_complete(event_loop_task)
+
+            self.loop.remove_signal_handler(signal.SIGWINCH)
 
         curses.wrapper(f)
 

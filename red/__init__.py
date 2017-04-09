@@ -12,7 +12,7 @@ class Editor:
     def app_event(self, app, type_, **kwargs):
         print(type_)
         if type_ is EventType.KEY_PRESS:
-            print(kwargs.get('key'))
+            print(kwargs.get('key'), ord(kwargs.get('key')))
 
 def main():
     editor = Editor()
