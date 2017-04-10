@@ -93,26 +93,30 @@ class Editor(Application):
 
         ccy, ccx = self.document.cursor_cell
         if self.n_cols > 2:
-            n_visible = self.n_lines - 3
+            n_vis_lines = self.n_lines - 3
+            n_vis_cols = self.n_cols - 2
 
             # Scroll the document so that the cursor is visible.
             if ccy < self.scroll_y:
                 self.scroll_y = ccy
-            elif ccy >= self.scroll_y + n_visible:
-                self.scroll_y = max(0, ccy - n_visible + 1)
+            elif ccy >= self.scroll_y + n_vis_lines:
+                self.scroll_y = max(0, ccy - n_vis_lines + 1)
 
-            for doc_y in range(n_visible):
+            if ccx < self.scroll_x:
+                self.scroll_x = ccx
+            elif ccx >= self.scroll_x + n_vis_cols:
+                self.scroll_x = max(0, ccx - n_vis_cols + 1)
+
+            for doc_y in range(n_vis_lines):
                 win_y = 1 + doc_y
-                if doc_y + self.scroll_y >= len(self.document.lines):
-                    draw_regions(
-                        self.screen, [('~', Style.WINDOW_BACKGROUND)], win_y, 1,
-                        self.n_cols-2)
-                else:
-                    doc_row, _ = self.document.cell_to_cursor(
-                        doc_y + self.scroll_y, self.scroll_x)
-                    draw_regions(
-                        self.screen, self.document.lines[doc_row].rendered,
-                        win_y, 1, self.n_cols-2)
+                doc_row, _ = self.document.cell_to_cursor(
+                    doc_y + self.scroll_y, self.scroll_x)
+                draw_regions(
+                    self.screen,
+                    self.document.render_line(
+                        self.scroll_y + doc_y,
+                        self.scroll_x, self.scroll_x + self.n_cols-2),
+                    win_y, 1, self.n_cols-2)
 
         self.draw_status()
 
@@ -156,9 +160,12 @@ class TextRow:
         self._text = value
         self._render()
 
-    @property
-    def rendered(self):
-        return self._rendered
+    def render(self, min_col=None, max_col=None):
+        if min_col is None:
+            min_col = 0
+        if max_col is None:
+            max_col = len(self._rendered)
+        return [(self._rendered[min_col:max_col], Style.HL_NORMAL)]
 
     def index_to_x(self, idx):
         """Convert an index into text into a column co-ordinate."""
@@ -178,7 +185,7 @@ class TextRow:
         return len(self.text)
 
     def _render(self):
-        self._rendered = [(self._text, Style.HL_NORMAL)]
+        self._rendered = self._text
 
 class TextDocument:
     def __init__(self):
@@ -191,6 +198,11 @@ class TextDocument:
         for line in file_object:
             line = line.rstrip('\n\r')
             self.append_row(line)
+
+    def render_line(self, line, min_col=None, max_col=None):
+        if line < 0 or line >= len(self.lines):
+            return [('\u2591' * (max_col - min_col), Style.HL_DRAGONS)]
+        return self.lines[line].render(min_col, max_col)
 
     @property
     def cursor(self):
@@ -340,7 +352,8 @@ def setup_curses_colour_pairs():
     curses.init_pair(Style.STATUS_BAR, p.BLACK, p.LIGHT_GREY)
     curses.init_pair(Style.STATUS_BAR_HL, p.RED, p.LIGHT_GREY)
 
-    curses.init_pair(Style.HL_NORMAL, p.GREEN, p.BLUE)
+    curses.init_pair(Style.HL_NORMAL, p.LIGHT_GREY, p.BLUE)
+    curses.init_pair(Style.HL_DRAGONS, p.DARK_GREY, p.BLUE)
 
 class Style(enum.IntEnum):
     """Styles for character cells."""
@@ -350,6 +363,7 @@ class Style(enum.IntEnum):
     STATUS_BAR_HL = 4
 
     HL_NORMAL = 5
+    HL_DRAGONS = 6
 
 def style_attr(style):
     """Convert a style to a curses attribute value."""
