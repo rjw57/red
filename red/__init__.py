@@ -31,16 +31,22 @@ class Editor(Application):
             curses.KEY_UP: self.move_up,
             curses.KEY_PPAGE: self.move_page_up,
 
-            curses.KEY_LEFT: lambda: self.document.move_backward(),
-            curses.KEY_RIGHT: lambda: self.document.move_forward(),
-            curses.KEY_HOME: lambda: self.document.move_home(),
-            curses.KEY_END: lambda: self.document.move_end(),
+            curses.KEY_LEFT: self.move_left,
+            curses.KEY_RIGHT: self.move_right,
+            curses.KEY_HOME: self.move_home,
+            curses.KEY_END: self.move_end,
         }
 
         self.document = TextDocument()
 
         # Scroll position measured in character cells
         self.scroll_x, self.scroll_y = 0, 0
+
+        # Desired cell cursor position after motion
+        self.desired_x = 0
+
+        # Flag indicating desired x should be updated
+        self._update_desired_x = True
 
     def start(self):
         setup_curses_colour_pairs()
@@ -49,14 +55,37 @@ class Editor(Application):
         self.redraw()
 
     def key_press(self, ch):
+        self._update_desired_x = True
+
         handler = self.key_bindings.get(ch)
         if handler is not None:
             handler()
+
+        if self._update_desired_x:
+            _, self.desired_x = self.document.cursor_cell
+        else:
+            cr, _ = self.document.cursor_cell
+            self.document.move_cursor(*self.document.cell_to_cursor(
+                cr, self.desired_x))
+
         self.redraw()
+
+    def move_home(self):
+        self.document.move_home()
+
+    def move_end(self):
+        self.document.move_end()
+
+    def move_left(self):
+        self.document.move_backward()
+
+    def move_right(self):
+        self.document.move_forward()
 
     def move_down(self):
         cy, cx = self.document.cursor
         self.document.move_cursor(cy+1, cx)
+        self._update_desired_x = False
 
     def move_page_down(self):
         for _ in range(max(1, self.n_lines-3)):
@@ -66,6 +95,7 @@ class Editor(Application):
     def move_up(self):
         cy, cx = self.document.cursor
         self.document.move_cursor(cy-1, cx)
+        self._update_desired_x = False
 
     def move_page_up(self):
         for _ in range(max(1, self.n_lines-3)):
