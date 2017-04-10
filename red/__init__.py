@@ -66,6 +66,7 @@ class Editor(Application):
     def move_page_down(self):
         for _ in range(max(1, self.n_lines-3)):
             self.move_down()
+        self.scroll_y, _ = self.document.cursor_cell
 
     def move_up(self):
         cy, cx = self.document.cursor
@@ -74,6 +75,7 @@ class Editor(Application):
     def move_page_up(self):
         for _ in range(max(1, self.n_lines-3)):
             self.move_up()
+        self.scroll_y = len(self.document.lines)
 
     def redraw(self):
         """Redraw the screen."""
