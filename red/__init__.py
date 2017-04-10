@@ -30,8 +30,11 @@ class Editor(Application):
             curses.KEY_NPAGE: self.move_page_down,
             curses.KEY_UP: self.move_up,
             curses.KEY_PPAGE: self.move_page_up,
-            curses.KEY_RIGHT: self.move_right,
-            curses.KEY_LEFT: self.move_left,
+
+            curses.KEY_LEFT: lambda: self.document.move_backward(),
+            curses.KEY_RIGHT: lambda: self.document.move_forward(),
+            curses.KEY_HOME: lambda: self.document.move_home(),
+            curses.KEY_END: lambda: self.document.move_end(),
         }
 
         self.document = TextDocument()
@@ -50,12 +53,6 @@ class Editor(Application):
         if handler is not None:
             handler()
         self.redraw()
-
-    def move_left(self):
-        self.document.cursor_backward()
-
-    def move_right(self):
-        self.document.cursor_forward()
 
     def move_down(self):
         cy, cx = self.document.cursor
@@ -100,10 +97,10 @@ class Editor(Application):
             elif ccy >= self.scroll_y + n_vis_lines:
                 self.scroll_y = max(0, ccy - n_vis_lines + 1)
 
-            if ccx < self.scroll_x:
-                self.scroll_x = ccx
-            elif ccx >= self.scroll_x + n_vis_cols:
-                self.scroll_x = max(0, ccx - n_vis_cols + 1)
+            #if ccx < self.scroll_x:
+            #    self.scroll_x = ccx
+            #elif ccx >= self.scroll_x + n_vis_cols:
+            #    self.scroll_x = max(0, ccx - n_vis_cols + 1)
 
             for doc_y in range(n_vis_lines):
                 win_y = 1 + doc_y
@@ -243,7 +240,18 @@ class TextDocument:
         row = self.lines[self._cursor_row]
         return self._cursor_row, row.index_to_x(self._cursor_idx)
 
-    def cursor_forward(self):
+    def move_home(self):
+        cr, ci = self.cursor
+        self.move_cursor(cr, 0)
+
+    def move_end(self):
+        cr, ci = self.cursor
+        if cr == len(self.lines):
+            return
+        row = self.lines[cr]
+        self.move_cursor(cr, len(row.text))
+
+    def move_forward(self):
         """Advance the cursor one position."""
         cr, ci = self.cursor
         if cr == len(self.lines):
@@ -254,7 +262,7 @@ class TextDocument:
             ci, cr = 0, cr + 1
         self.move_cursor(cr, ci)
 
-    def cursor_backward(self):
+    def move_backward(self):
         """Advance the cursor one position."""
         cr, ci = self.cursor
         if cr == 0 and ci == 0:
