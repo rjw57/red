@@ -52,12 +52,10 @@ class Editor(Application):
         self.redraw()
 
     def move_left(self):
-        cy, cx = self.document.cursor
-        self.document.move_cursor(cy, cx-1)
+        self.document.cursor_backward()
 
     def move_right(self):
-        cy, cx = self.document.cursor
-        self.document.move_cursor(cy, cx+1)
+        self.document.cursor_forward()
 
     def move_down(self):
         cy, cx = self.document.cursor
@@ -111,12 +109,12 @@ class Editor(Application):
                 win_y = 1 + doc_y
                 doc_row, _ = self.document.cell_to_cursor(
                     doc_y + self.scroll_y, self.scroll_x)
-                draw_regions(
-                    self.screen,
-                    self.document.render_line(
-                        self.scroll_y + doc_y,
-                        self.scroll_x, self.scroll_x + self.n_cols-2),
-                    win_y, 1, self.n_cols-2)
+
+                s_line = self.document.get_styled_line(self.scroll_y + doc_y)
+                if s_line is None:
+                    s_line = [('\u2591' * n_vis_cols, Style.HL_DRAGONS)]
+
+                draw_regions(self.screen, s_line,win_y, 1, self.n_cols-2)
 
         self.draw_status()
 
@@ -144,11 +142,14 @@ class Editor(Application):
             (' Quit', Style.STATUS_BAR),
         ], y=self.n_lines-1, x=0)
 
+TAB_SIZE=8
+
 class TextRow:
     # pylint: disable=too-few-public-methods
     def __init__(self, s=''):
         self._text = s
         self._rendered = None
+        self._rendered_widths = []
         self._render()
 
     @property
@@ -160,32 +161,56 @@ class TextRow:
         self._text = value
         self._render()
 
-    def render(self, min_col=None, max_col=None):
-        if min_col is None:
-            min_col = 0
-        if max_col is None:
-            max_col = len(self._rendered)
-        return [(self._rendered[min_col:max_col], Style.HL_NORMAL)]
+    @property
+    def rendered(self):
+        return self._rendered
 
     def index_to_x(self, idx):
         """Convert an index into text into a column co-ordinate."""
-        return wcswidth(self.text[:idx])
+        return sum(self._rendered_widths[:idx])
 
     def x_to_index(self, x):
         """Convert a column co-ordinate to an index into text."""
-        w = 0
-        for idx, c in enumerate(self.text):
-            c_w = wcwidth(c)
-            if c_w < 0:
-                continue
-
-            if w + c_w > x:
+        w_sum = 0
+        for idx, w in enumerate(self._rendered_widths):
+            if w_sum + w > x:
                 return idx
-            w += c_w
+            w_sum += w
         return len(self.text)
 
     def _render(self):
-        self._rendered = self._text
+        self._rendered = []
+        self._rendered_widths = []
+        x = 0
+        text_is_ws = self._text.isspace()
+        for ch in self._text:
+            if not ch.isspace():
+                non_ws_encountered = True
+
+            ch_w = wcwidth(ch)
+            if ch == '\t':
+                tab_size = TAB_SIZE - (x % TAB_SIZE)
+                tab_chars = '\u203a' + (TAB_SIZE-1) * ' '
+                self._rendered.append((tab_chars[:tab_size], Style.HL_WHITESPACE))
+                self._rendered_widths.append(tab_size)
+            elif text_is_ws and ch_w > 0:
+                self._rendered.append(('\u00b7 '[:ch_w], Style.HL_WHITESPACE))
+                self._rendered_widths.append(ch_w)
+                x += ch_w
+            elif ch_w > 0:
+                self._rendered.append((ch, Style.HL_NORMAL))
+                self._rendered_widths.append(ch_w)
+                x += ch_w
+        self._rendered = normalise_styled_text(self._rendered)
+
+def normalise_styled_text(regions):
+    norm = []
+    for txt, style in regions:
+        if len(norm) == 0 or norm[-1][1] is not style:
+            norm.append((txt, style))
+        else:
+            norm[-1] = (norm[-1][0] + txt, norm[-1][1])
+    return norm
 
 class TextDocument:
     def __init__(self):
@@ -199,10 +224,10 @@ class TextDocument:
             line = line.rstrip('\n\r')
             self.append_row(line)
 
-    def render_line(self, line, min_col=None, max_col=None):
+    def get_styled_line(self, line):
         if line < 0 or line >= len(self.lines):
-            return [('\u2591' * (max_col - min_col), Style.HL_DRAGONS)]
-        return self.lines[line].render(min_col, max_col)
+            return None
+        return self.lines[line].rendered
 
     @property
     def cursor(self):
@@ -217,6 +242,28 @@ class TextDocument:
             return self._cursor_row, 0
         row = self.lines[self._cursor_row]
         return self._cursor_row, row.index_to_x(self._cursor_idx)
+
+    def cursor_forward(self):
+        """Advance the cursor one position."""
+        cr, ci = self.cursor
+        if cr == len(self.lines):
+            return
+        ci += 1
+        row = self.lines[cr]
+        if ci > len(row.text):
+            ci, cr = 0, cr + 1
+        self.move_cursor(cr, ci)
+
+    def cursor_backward(self):
+        """Advance the cursor one position."""
+        cr, ci = self.cursor
+        if cr == 0 and ci == 0:
+            return
+        ci -= 1
+        if ci < 0 and cr > 0:
+            row = self.lines[cr-1]
+            ci, cr = len(row.text), cr - 1
+        self.move_cursor(cr, ci)
 
     def move_cursor(self, row, index):
         """Move the cursor to a specific row and index within that row. The
@@ -282,7 +329,7 @@ def wctrim(s, max_w):
         w += ch_w
     return ''.join(chs), w
 
-def draw_regions(win, regions, y=None, x=None, max_w=None):
+def draw_regions(win, regions, y=None, x=None, max_w=None, starting_at=None):
     # pylint: disable=too-many-locals,too-many-branches
     # Get cursor position and window size
     cy, cx = win.getyx()
@@ -293,6 +340,8 @@ def draw_regions(win, regions, y=None, x=None, max_w=None):
         y = cy
     if x is None:
         x = cx
+    if starting_at is None:
+        starting_at = 0
     if max_w is None:
         max_w = max(0, nc - x)
 
@@ -304,6 +353,7 @@ def draw_regions(win, regions, y=None, x=None, max_w=None):
         return
 
     # Otherwise, let's go
+    region_x = 0
     for region in regions:
         text, style = region
         attr = style_attr(style)
@@ -354,6 +404,7 @@ def setup_curses_colour_pairs():
 
     curses.init_pair(Style.HL_NORMAL, p.LIGHT_GREY, p.BLUE)
     curses.init_pair(Style.HL_DRAGONS, p.DARK_GREY, p.BLUE)
+    curses.init_pair(Style.HL_WHITESPACE, p.CYAN, p.BLUE)
 
 class Style(enum.IntEnum):
     """Styles for character cells."""
@@ -364,6 +415,7 @@ class Style(enum.IntEnum):
 
     HL_NORMAL = 5
     HL_DRAGONS = 6
+    HL_WHITESPACE = 7
 
 def style_attr(style):
     """Convert a style to a curses attribute value."""
