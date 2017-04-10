@@ -30,11 +30,13 @@ class Editor(Application):
             curses.KEY_NPAGE: self.move_page_down,
             curses.KEY_UP: self.move_up,
             curses.KEY_PPAGE: self.move_page_up,
+            curses.KEY_RIGHT: self.move_right,
+            curses.KEY_LEFT: self.move_left,
         }
 
         self.document = TextDocument()
         self.cursor_x, self.cursor_y = 0, 0
-        self.scroll_y = 0
+        self.scroll_x, self.scroll_y = 0, 0
 
     def start(self):
         setup_curses_colour_pairs()
@@ -48,6 +50,16 @@ class Editor(Application):
             handler()
         self.redraw()
 
+    def move_left(self):
+        if self.cursor_x > 0:
+            self.cursor_x -= 1
+
+    def move_right(self):
+        if self.cursor_y < len(self.document.rows):
+            self.cursor_x += 1
+            self.cursor_x = min(
+                self.cursor_x, len(self.document.rows[self.cursor_y].text))
+
     def move_down(self):
         if self.cursor_y < len(self.document.rows):
             self.cursor_y += 1
@@ -55,7 +67,6 @@ class Editor(Application):
     def move_page_down(self):
         for _ in range(max(1, self.n_lines-3)):
             self.move_down()
-        self.scroll_y = len(self.document.rows) + 1 # force scroll
 
     def move_up(self):
         if self.cursor_y > 0:
@@ -108,14 +119,17 @@ class Editor(Application):
 
         self.draw_status()
 
-        self.screen.leaveok(0)
-        curses.curs_set(1)
-        if self.n_lines > 3 and self.n_cols > 2:
-            self.screen.move(
-                1 + self.cursor_y - self.scroll_y,
-                1 + self.cursor_x)
+        # Calculate on-screen cursor pos
+        cy = self.cursor_y - self.scroll_y + 1
+        cx = - self.scroll_x + 1
+        if self.cursor_y < len(self.document.rows):
+            row = self.document.rows[self.cursor_y]
+            cx = row.index_to_x(self.cursor_x) - self.scroll_x + 1
 
-        self.screen.refresh()
+        if cx >= 1 and cx < self.n_cols - 1 and cy >= 1 and cy < self.n_lines - 1:
+            self.screen.leaveok(0)
+            self.screen.move(cy, cx)
+            curses.curs_set(1)
 
     def draw_status(self):
         if self.n_lines < 1:
@@ -152,6 +166,23 @@ class TextRow:
     @property
     def rendered(self):
         return self._rendered
+
+    def index_to_x(self, idx):
+        """Convert an index into text into a column co-ordinate."""
+        return wcswidth(self.text[:idx])
+
+    def x_to_index(self, x):
+        """Convert a column co-ordinate to an index into text."""
+        w = 0
+        for idx, c in enumerate(self.text):
+            c_w = wcwidth(c)
+            if c_w < 0:
+                continue
+
+            if w + c_w > x:
+                return idx
+            w += c_w
+        return len(self.text)
 
     def _render(self):
         self._rendered = [(self._text, Style.WINDOW_BACKGROUND)]
