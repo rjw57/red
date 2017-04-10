@@ -1,16 +1,10 @@
 import curses
+from curses.ascii import ctrl
 import enum
 
 def main():
     editor = Editor()
     curses.wrapper(editor.curses_main)
-
-def ctrl_key(key):
-    """Return string corresponding to Ctrl-<key>. Key should be a lower-case
-    alphabetic character or '@'.
-
-    """
-    return chr(ord(key) & 0x1f)
 
 class Editor:
     def __init__(self):
@@ -19,7 +13,7 @@ class Editor:
 
         # A simple dictionary mapping key-presses to callables.
         self.key_bindings = {
-            ctrl_key('q'): self.quit,
+            ctrl('q'): self.quit,
         }
 
     def curses_main(self, screen):
