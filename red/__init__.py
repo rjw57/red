@@ -10,7 +10,7 @@ from .app import Application
 
 def main():
     app = Editor()
-    app.add_timer(3.5, app.quit)
+    #app.add_timer(3.5, app.quit)
     app.run()
 
 class Editor(Application):
@@ -21,10 +21,6 @@ class Editor(Application):
         self.key_bindings = {
             ctrl('q'): self.quit,
         }
-
-        # The curses screen for the app
-        self.screen = None
-        self.n_lines, self.n_cols = 0, 0
 
     def start(self):
         setup_curses_colour_pairs()
@@ -46,29 +42,93 @@ class Editor(Application):
         self.screen.bkgdset(' ', style_attr(Style.WINDOW_BACKGROUND))
         self.screen.erase()
 
-        draw_frame(
-            self.screen, 0, 0, self.n_lines - 1, self.n_cols,
-            style_attr(Style.WINDOW_BORDER), FrameStyle.DOUBLE)
+        if self.n_lines > 3 and self.n_cols >= 3:
+            draw_frame(
+                self.screen, 0, 0, self.n_lines - 1, self.n_cols,
+                style=Style.WINDOW_BORDER, frame_style=FrameStyle.DOUBLE)
 
         self.draw_status()
 
         self.screen.leaveok(0)
         curses.curs_set(1)
-        self.screen.move(1, 1)
+        if self.n_lines > 1 and self.n_cols > 1:
+            self.screen.move(1, 1)
 
         self.screen.refresh()
 
     def draw_status(self):
+        if self.n_lines < 1:
+            return
+
+        # Clear status bar
         self.screen.move(self.n_lines-1, 0)
         self.screen.bkgdset(' ', style_attr(Style.STATUS_BAR))
         self.screen.clrtoeol()
 
-        self.screen.attrset(style_attr(Style.STATUS_BAR))
-        put_regions(self.screen, [
-            ' ',
-            ('Ctrl-Q', style_attr(Style.STATUS_BAR_HL)),
-            ' Quit'
-        ])
+        # Draw status bar line
+        draw_regions(self.screen, [
+            (' ', Style.STATUS_BAR),
+            ('Ctrl-Q', Style.STATUS_BAR_HL),
+            (' Quit', Style.STATUS_BAR),
+        ], y=self.n_lines-1, x=0)
+
+def draw_regions(win, regions, y=None, x=None, max_w=None):
+    # pylint: disable=too-many-locals,too-many-branches
+    # Get cursor position and window size
+    cy, cx = win.getyx()
+    nl, nc = win.getmaxyx()
+
+    # Set default values
+    if y is None:
+        y = cy
+    if x is None:
+        x = cx
+    if max_w is None:
+        max_w = max(0, nc - x)
+
+    # Use max_w to set nc
+    nc = min(nc, x + max_w)
+
+    # Abort if x or y outside of window
+    if x < 0 or x >= nc or y < 0 or y >= nl:
+        return
+
+    # Otherwise, let's go
+    for region in regions:
+        text, style = region
+        attr = style_attr(style)
+
+        # Get width of region in cells and remaining space
+        region_w = wcswidth(text)
+        w_remaining = nc - x
+        assert w_remaining >= 0
+
+        if region_w != -1 and w_remaining >= region_w:
+            # If this text fits in the remaining space, just use addstr. Note
+            # that we need to silently ignore any errors from addstr as per
+            # https://bugs.python.org/issue8243
+            try:
+                win.addstr(y, x, text, attr)
+            except curses.error:
+                pass
+            x += region_w
+        else:
+            # The remaining space is too small, add character-by-character
+            for c in text:
+                c_w = wcwidth(c)
+                if c_w == -1:
+                    continue
+                if w_remaining >= c_w:
+                    try:
+                        win.addstr(y, x, c, attr)
+                    except curses.error:
+                        pass
+                x += c_w
+                w_remaining -= c_w
+
+        # We're done if we're past the end of the line
+        if x >= nc:
+            break
 
 def setup_curses_colour_pairs():
     """Associate sensible colour pairs for the values in Style."""
@@ -118,110 +178,26 @@ class FrameStyle(enum.Enum):
     SINGLE = 1
     DOUBLE = 2
 
-def draw_frame(win, y, x, h, w, attr=0, style=FrameStyle.SINGLE):
+def draw_frame(win, y, x, h, w, style, frame_style=FrameStyle.SINGLE):
     # pylint: disable=too-many-arguments
-    if style is FrameStyle.SINGLE:
+    if frame_style is FrameStyle.SINGLE:
         tlc, trc, blc, brc, hc, vc = '\u250c\u2510\u2514\u2518\u2500\u2502'
-    elif style is FrameStyle.DOUBLE:
+    elif frame_style is FrameStyle.DOUBLE:
         tlc, trc, blc, brc, hc, vc = '\u2554\u2557\u255a\u255d\u2550\u2551'
     else:
         raise TypeError('style is invalid')
 
-    # Cannot draw < 2x2 frames
-    if h < 2 or w < 2:
+    # Cannot draw < 3x3 frames
+    if h < 3 or w < 3:
         return
 
-    put_regions(win, y, x, [
-        (tlc, attr), (hc * max(0, w-2), attr), (trc, attr)
-    ])
-    put_regions(win, y+h-1, x, [
-        (blc, attr), (hc * max(0, w-2), attr), (brc, attr)
-    ])
+    draw_regions(win, [
+        (tlc, style), (hc * max(0, w-2), style), (trc, style)
+    ], y=y, x=x)
+    draw_regions(win, [
+        (blc, style), (hc * max(0, w-2), style), (brc, style)
+    ], y=y+h-1, x=x)
 
     for side_y in range(y+1, y+h-1):
-        put_regions(win, side_y, x, [(vc, attr)])
-        put_regions(win, side_y, x+w-1, [(vc, attr)])
-
-def put_regions(win, *args):
-    """Write regions of text to the window at a given position. Each region
-    is either a string or a tuple containing a string and curses attribute
-    number. Output is clipped to the right-side of the screen.
-
-    Arguments are str, [attr] or y, x, str, [attr] like other curses functions.
-
-    """
-    # pylint:disable=too-many-branches
-
-    if len(args) == 1:
-        regions = args[0]
-        attr = 0
-        y, x = win.getyx()
-    elif len(args) == 2:
-        regions, attr = args
-        y, x = win.getyx()
-    elif len(args) == 3:
-        y, x, regions = args
-        attr = 0
-    elif len(args) == 4:
-        y, x, regions, attr = args
-    else:
-        raise TypeError('put_regions takes 1 to 4 arguments')
-
-    n_rows, n_cols = win.getmaxyx()
-
-    # Ignore out of range y
-    if y >= n_rows or y < 0:
-        return
-
-    for region in regions:
-        # Immediately abort if x is beyond printable areas
-        if x >= n_cols:
-            break
-
-        # Determining if this is a string or a string, attribute pair
-        if isinstance(region, tuple):
-            s, attr = region[:2]
-        else:
-            s, attr = region, 0
-
-        # What's the width of this region?
-        w = wcswidth(s)
-
-        if w != -1 and x + w < n_cols:
-            # In the common case, just use addstr
-            win.addstr(y, x, s, attr)
-        elif w != -1 and x + w == n_cols:
-            # See https://bugs.python.org/issue8243. We need to silently
-            # swallow the error from addstr.
-            try:
-                win.addstr(y, x, s, attr)
-            except curses.error:
-                pass
-        else:
-            # We're in a complex position. Output character-by-character
-            running_x = x
-            for ch in s:
-                ch_w = wcwidth(ch)
-                if ch_w == -1:
-                    continue
-
-                # If there's no space left to write this character, we're
-                # done
-                if n_cols - running_x < ch_w:
-                    break
-
-                if running_x + w >= n_cols:
-                    # If we're going to insert at the last column we need to
-                    # swallow the error from addstr as above.
-                    try:
-                        win.addstr(y, running_x, ch, attr)
-                    except curses.error:
-                        pass
-                else:
-                    # Insert with addstr
-                    win.addstr(y, running_x, ch, attr)
-
-                running_x += ch_w
-
-        # Advance x-position by string width
-        x += w
+        draw_regions(win, [(vc, style)], y=side_y, x=x)
+        draw_regions(win, [(vc, style)], y=side_y, x=x+w-1)
