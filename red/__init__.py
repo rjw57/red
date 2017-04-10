@@ -35,7 +35,8 @@ class Editor(Application):
         }
 
         self.document = TextDocument()
-        self.cursor_x, self.cursor_y = 0, 0
+
+        # Scroll position measured in character cells
         self.scroll_x, self.scroll_y = 0, 0
 
     def start(self):
@@ -51,26 +52,24 @@ class Editor(Application):
         self.redraw()
 
     def move_left(self):
-        if self.cursor_x > 0:
-            self.cursor_x -= 1
+        cy, cx = self.document.cursor
+        self.document.move_cursor(cy, cx-1)
 
     def move_right(self):
-        if self.cursor_y < len(self.document.rows):
-            self.cursor_x += 1
-            self.cursor_x = min(
-                self.cursor_x, len(self.document.rows[self.cursor_y].text))
+        cy, cx = self.document.cursor
+        self.document.move_cursor(cy, cx+1)
 
     def move_down(self):
-        if self.cursor_y < len(self.document.rows):
-            self.cursor_y += 1
+        cy, cx = self.document.cursor
+        self.document.move_cursor(cy+1, cx)
 
     def move_page_down(self):
         for _ in range(max(1, self.n_lines-3)):
             self.move_down()
 
     def move_up(self):
-        if self.cursor_y > 0:
-            self.cursor_y -= 1
+        cy, cx = self.document.cursor
+        self.document.move_cursor(cy-1, cx)
 
     def move_page_up(self):
         for _ in range(max(1, self.n_lines-3)):
@@ -79,13 +78,6 @@ class Editor(Application):
     def redraw(self):
         """Redraw the screen."""
         # Move cursor to be within text document bounds
-        self.cursor_y = max(0, min(self.cursor_y, len(self.document.rows)))
-        if self.cursor_y < len(self.document.rows):
-            self.cursor_x = min(
-                len(self.document.rows[self.cursor_y].text), self.cursor_x)
-        else:
-            self.cursor_x = 0
-
         curses.curs_set(0)
         self.screen.leaveok(1)
 
@@ -97,38 +89,37 @@ class Editor(Application):
             title='Untitled',
             frame_style=FrameStyle.DOUBLE)
 
+        ccy, ccx = self.document.cursor_cell
         if self.n_cols > 2:
             n_visible = self.n_lines - 3
 
             # Scroll the document so that the cursor is visible.
-            if self.cursor_y < self.scroll_y:
-                self.scroll_y = self.cursor_y
-            elif self.cursor_y >= self.scroll_y + n_visible:
-                self.scroll_y = max(0, self.cursor_y - n_visible + 1)
+            if ccy < self.scroll_y:
+                self.scroll_y = ccy
+            elif ccy >= self.scroll_y + n_visible:
+                self.scroll_y = max(0, ccy - n_visible + 1)
 
-            for doc_y, doc_row_idx in enumerate(range(self.scroll_y, self.scroll_y+n_visible)):
-                y = doc_y + 1
-                if doc_row_idx >= len(self.document.rows):
+            for doc_y in range(n_visible):
+                win_y = 1 + doc_y
+                if doc_y + self.scroll_y >= len(self.document.lines):
                     draw_regions(
-                        self.screen, [('~', Style.WINDOW_BACKGROUND)], y, 1,
+                        self.screen, [('~', Style.WINDOW_BACKGROUND)], win_y, 1,
                         self.n_cols-2)
                 else:
+                    doc_row, _ = self.document.cell_to_cursor(
+                        doc_y + self.scroll_y, self.scroll_x)
                     draw_regions(
-                        self.screen, self.document.rows[doc_row_idx].rendered,
-                        y, 1, self.n_cols-2)
+                        self.screen, self.document.lines[doc_row].rendered,
+                        win_y, 1, self.n_cols-2)
 
         self.draw_status()
 
         # Calculate on-screen cursor pos
-        cy = self.cursor_y - self.scroll_y + 1
-        cx = - self.scroll_x + 1
-        if self.cursor_y < len(self.document.rows):
-            row = self.document.rows[self.cursor_y]
-            cx = row.index_to_x(self.cursor_x) - self.scroll_x + 1
-
-        if cx >= 1 and cx < self.n_cols - 1 and cy >= 1 and cy < self.n_lines - 1:
+        scy = ccy - self.scroll_y + 1
+        scx = ccx - self.scroll_x + 1
+        if scx >= 1 and scx < self.n_cols - 1 and scy >= 1 and scy < self.n_lines - 1:
             self.screen.leaveok(0)
-            self.screen.move(cy, cx)
+            self.screen.move(scy, scx)
             curses.curs_set(1)
 
     def draw_status(self):
@@ -185,11 +176,12 @@ class TextRow:
         return len(self.text)
 
     def _render(self):
-        self._rendered = [(self._text, Style.WINDOW_BACKGROUND)]
+        self._rendered = [(self._text, Style.HL_NORMAL)]
 
 class TextDocument:
     def __init__(self):
-        self.rows = []
+        self.lines = []
+        self._cursor_row, self._cursor_idx = 0, 0
 
     def read_from_file(self, file_object):
         self.clear()
@@ -198,11 +190,56 @@ class TextDocument:
             line = line.rstrip('\n\r')
             self.append_row(line)
 
+    @property
+    def cursor(self):
+        """A pair giving the row and index into that row of the cursor."""
+        return self._cursor_row, self._cursor_idx
+
+    @property
+    def cursor_cell(self):
+        """A pair giving the row and column index of the cell corresponding to
+        the cursor."""
+        if self._cursor_row == len(self.lines):
+            return self._cursor_row, 0
+        row = self.lines[self._cursor_row]
+        return self._cursor_row, row.index_to_x(self._cursor_idx)
+
+    def move_cursor(self, row, index):
+        """Move the cursor to a specific row and index within that row. The
+        cursor is constrained to the valid set of input points for the document.
+
+        """
+        # constrain row
+        row = max(0, min(row, len(self.lines)))
+
+        # constrain index
+        if row == len(self.lines):
+            index = 0
+        else:
+            index = max(0, min(index, len(self.lines[row].text)))
+
+        self._cursor_row, self._cursor_idx = row, index
+
     def append_row(self, s):
-        self.rows.append(TextRow(s))
+        self.lines.append(TextRow(s))
 
     def clear(self):
-        self.rows = []
+        self.lines = []
+
+    def cell_to_cursor(self, y, x):
+        """Convert cell co-ordinate to nearest cursor position as a row, index
+        pair.
+
+        """
+        if y < 0:
+            return 0, 0
+        if y >= len(self.lines):
+            return len(self.lines), 0
+        if x < 0:
+            return y, 0
+
+        row = self.lines[y]
+        return y, row.x_to_index(x)
 
 def wctrim(s, max_w):
     """Return pair s, w which is a string and the cell width of that string. The
@@ -301,12 +338,16 @@ def setup_curses_colour_pairs():
     curses.init_pair(Style.STATUS_BAR, p.BLACK, p.LIGHT_GREY)
     curses.init_pair(Style.STATUS_BAR_HL, p.RED, p.LIGHT_GREY)
 
+    curses.init_pair(Style.HL_NORMAL, p.GREEN, p.BLUE)
+
 class Style(enum.IntEnum):
     """Styles for character cells."""
     WINDOW_BORDER = 1
     WINDOW_BACKGROUND = 2
     STATUS_BAR = 3
     STATUS_BAR_HL = 4
+
+    HL_NORMAL = 5
 
 def style_attr(style):
     """Convert a style to a curses attribute value."""
