@@ -21,14 +21,12 @@ class Editor:
         switched to.
 
         """
-        # Ensure the terminal is in "raw" mode
+        # Ensure the terminal is in "raw" mode and set up the colour palette
         curses.raw()
+        setup_curses_colour_pairs()
 
         # Record the current curses screen
         self.screen = screen
-
-        # Set up the colour pairs
-        setup_curses_colour_pairs()
 
         # Paint the initial screen
         self.redraw()
@@ -49,10 +47,10 @@ class Editor:
         """Redraw the screen."""
         s = self.screen
 
-        s.bkgdset(' ', curses.color_pair(ColourPairs.WINDOW_BACKGROUND))
+        s.bkgdset(' ', attr(Style.WINDOW_BACKGROUND))
         s.erase()
 
-        s.attrset(curses.color_pair(ColourPairs.WINDOW_BORDER))
+        s.attrset(attr(Style.WINDOW_BORDER))
         s.border()
 
         s.refresh()
@@ -62,20 +60,23 @@ class Editor:
         self.should_exit = True
 
 def setup_curses_colour_pairs():
-    """Associate sensible colour pairs for the values in ColourPairs."""
+    """Associate sensible colour pairs for the values in Style."""
     if curses.COLORS == 256:
         p = TerminalPalette256
     else:
         raise RuntimeError('Only 256 colour terminals supported')
 
-    curses.init_pair(ColourPairs.WINDOW_BORDER, p.BRIGHT_WHITE, p.BLUE)
-    curses.init_pair(ColourPairs.WINDOW_BACKGROUND, p.LIGHT_GREY, p.BLUE)
+    curses.init_pair(Style.WINDOW_BORDER, p.BRIGHT_WHITE, p.BLUE)
+    curses.init_pair(Style.WINDOW_BACKGROUND, p.LIGHT_GREY, p.BLUE)
 
-class ColourPairs(enum.IntEnum):
-    """Colour pair numbers."""
-
+class Style(enum.IntEnum):
+    """Styles for character cells."""
     WINDOW_BORDER = 1
     WINDOW_BACKGROUND = 2
+
+def attr(style):
+    """Convert a style to a curses attribute value."""
+    return curses.color_pair(style)
 
 class TerminalPalette256(enum.IntEnum):
     """A terminal palette suitable for 256 colour displays."""
