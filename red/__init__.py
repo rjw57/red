@@ -1,94 +1,74 @@
 import curses
 from curses.ascii import ctrl
 import enum
+import queue
+import time
 
 from wcwidth import wcwidth, wcswidth
 
-def main():
-    editor = Editor()
-    curses.wrapper(editor.curses_main)
+from .app import Application
 
-class Editor:
+def main():
+    app = Editor()
+    app.add_timer(3.5, app.quit)
+    app.run()
+
+class Editor(Application):
     def __init__(self):
-        self.win = None
-        self.should_exit = False
-        self.n_lines, self.n_cols = 0, 0
+        super(Editor, self).__init__()
 
         # A simple dictionary mapping key-presses to callables.
         self.key_bindings = {
             ctrl('q'): self.quit,
-
-            curses.KEY_RESIZE: self.win_resized,
         }
 
-    def curses_main(self, screen):
-        """Wrapped function after terminal is set up and the alternate screen
-        switched to.
+        # The curses screen for the app
+        self.screen = None
+        self.n_lines, self.n_cols = 0, 0
 
-        """
-        # Ensure the terminal is in "raw" mode and set up the colour palette
-        curses.raw()
+    def start(self):
         setup_curses_colour_pairs()
 
-        # Record the current curses screen and cache size
-        self.set_win(screen)
+    def resize(self):
+        self.redraw()
 
-        # Start event loop
-        while not self.should_exit:
-            # Get next keypress
-            ch = screen.get_wch()
-
-            # Look up keypress in key bindings dict
-            handler = self.key_bindings.get(ch)
-            if handler is not None:
-                handler()
-
-            self.redraw()
-
-    def set_win(self, win):
-        """Update the curses window for the app. Causes a redraw."""
-        self.win = win
-        self.win_resized()
-
-    def win_resized(self):
-        self.n_lines, self.n_cols = self.win.getmaxyx()
+    def key_press(self, ch):
+        handler = self.key_bindings.get(ch)
+        if handler is not None:
+            handler()
         self.redraw()
 
     def redraw(self):
         """Redraw the screen."""
         curses.curs_set(0)
-        self.win.leaveok(1)
+        self.screen.leaveok(1)
 
-        self.win.bkgdset(' ', style_attr(Style.WINDOW_BACKGROUND))
-        self.win.erase()
+        self.screen.bkgdset(' ', style_attr(Style.WINDOW_BACKGROUND))
+        self.screen.erase()
 
         draw_frame(
-            self.win, 0, 0, self.n_lines - 1, self.n_cols,
+            self.screen, 0, 0, self.n_lines - 1, self.n_cols,
             style_attr(Style.WINDOW_BORDER), FrameStyle.DOUBLE)
 
         self.draw_status()
 
-        self.win.leaveok(0)
+        self.screen.leaveok(0)
         curses.curs_set(1)
-        self.win.move(1, 1)
+        self.screen.move(1, 1)
 
-        self.win.refresh()
+        self.screen.refresh()
 
     def draw_status(self):
-        self.win.move(self.n_lines-1, 0)
-        self.win.bkgdset(' ', style_attr(Style.STATUS_BAR))
-        self.win.clrtoeol()
+        self.screen.move(self.n_lines-1, 0)
+        self.screen.bkgdset(' ', style_attr(Style.STATUS_BAR))
+        self.screen.clrtoeol()
 
-        self.win.attrset(style_attr(Style.STATUS_BAR))
-        put_regions(self.win, [
+        self.screen.attrset(style_attr(Style.STATUS_BAR))
+        put_regions(self.screen, [
             ' ',
             ('Ctrl-Q', style_attr(Style.STATUS_BAR_HL)),
             ' Quit'
         ])
-
-    def quit(self):
-        """Signal that the application should exit."""
-        self.should_exit = True
 
 def setup_curses_colour_pairs():
     """Associate sensible colour pairs for the values in Style."""
