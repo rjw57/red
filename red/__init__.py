@@ -3,6 +3,7 @@ from curses.ascii import ctrl
 import enum
 import queue
 import time
+import sys
 
 from wcwidth import wcwidth, wcswidth
 
@@ -10,6 +11,11 @@ from .app import Application
 
 def main():
     app = Editor()
+
+    if len(sys.argv) > 1:
+        with open(sys.argv[1]) as f:
+            app.document.read_from_file(f)
+
     #app.add_timer(3.5, app.quit)
     app.run()
 
@@ -20,7 +26,15 @@ class Editor(Application):
         # A simple dictionary mapping key-presses to callables.
         self.key_bindings = {
             ctrl('q'): self.quit,
+            curses.KEY_DOWN: self.move_down,
+            curses.KEY_NPAGE: self.move_page_down,
+            curses.KEY_UP: self.move_up,
+            curses.KEY_PPAGE: self.move_page_up,
         }
+
+        self.document = TextDocument()
+        self.cursor_x, self.cursor_y = 0, 0
+        self.scroll_y = 0
 
     def start(self):
         setup_curses_colour_pairs()
@@ -34,25 +48,72 @@ class Editor(Application):
             handler()
         self.redraw()
 
+    def move_down(self):
+        if self.cursor_y < len(self.document.rows):
+            self.cursor_y += 1
+
+    def move_page_down(self):
+        for _ in range(max(1, self.n_lines-3)):
+            self.move_down()
+        self.scroll_y = len(self.document.rows) + 1 # force scroll
+
+    def move_up(self):
+        if self.cursor_y > 0:
+            self.cursor_y -= 1
+
+    def move_page_up(self):
+        for _ in range(max(1, self.n_lines-3)):
+            self.move_up()
+
     def redraw(self):
         """Redraw the screen."""
+        # Move cursor to be within text document bounds
+        self.cursor_y = max(0, min(self.cursor_y, len(self.document.rows)))
+        if self.cursor_y < len(self.document.rows):
+            self.cursor_x = min(
+                len(self.document.rows[self.cursor_y].text), self.cursor_x)
+        else:
+            self.cursor_x = 0
+
         curses.curs_set(0)
         self.screen.leaveok(1)
 
         self.screen.bkgdset(' ', style_attr(Style.WINDOW_BACKGROUND))
         self.screen.erase()
 
-        if self.n_lines > 3 and self.n_cols >= 3:
-            draw_frame(
-                self.screen, 0, 0, self.n_lines - 1, self.n_cols,
-                style=Style.WINDOW_BORDER, frame_style=FrameStyle.DOUBLE)
+        draw_window_frame(
+            self.screen, 0, 0, self.n_lines - 1, self.n_cols,
+            title='Untitled',
+            frame_style=FrameStyle.DOUBLE)
+
+        if self.n_cols > 2:
+            n_visible = self.n_lines - 3
+
+            # Scroll the document so that the cursor is visible.
+            if self.cursor_y < self.scroll_y:
+                self.scroll_y = self.cursor_y
+            elif self.cursor_y >= self.scroll_y + n_visible:
+                self.scroll_y = max(0, self.cursor_y - n_visible + 1)
+
+            for doc_y, doc_row_idx in enumerate(range(self.scroll_y, self.scroll_y+n_visible)):
+                y = doc_y + 1
+                if doc_row_idx >= len(self.document.rows):
+                    draw_regions(
+                        self.screen, [('~', Style.WINDOW_BACKGROUND)], y, 1,
+                        self.n_cols-2)
+                else:
+                    draw_regions(
+                        self.screen, self.document.rows[doc_row_idx].rendered,
+                        y, 1, self.n_cols-2)
 
         self.draw_status()
 
         self.screen.leaveok(0)
         curses.curs_set(1)
-        if self.n_lines > 1 and self.n_cols > 1:
-            self.screen.move(1, 1)
+        if self.n_lines > 3 and self.n_cols > 2:
+            self.screen.move(
+                1 + self.cursor_y - self.scroll_y,
+                1 + self.cursor_x)
 
         self.screen.refresh()
 
@@ -71,6 +132,73 @@ class Editor(Application):
             ('Ctrl-Q', Style.STATUS_BAR_HL),
             (' Quit', Style.STATUS_BAR),
         ], y=self.n_lines-1, x=0)
+
+class TextRow:
+    # pylint: disable=too-few-public-methods
+    def __init__(self, s=''):
+        self._text = s
+        self._rendered = None
+        self._render()
+
+    @property
+    def text(self):
+        return self._text
+
+    @text.setter
+    def text(self, value):
+        self._text = value
+        self._render()
+
+    @property
+    def rendered(self):
+        return self._rendered
+
+    def _render(self):
+        self._rendered = [(self._text, Style.WINDOW_BACKGROUND)]
+
+class TextDocument:
+    def __init__(self):
+        self.rows = []
+
+    def read_from_file(self, file_object):
+        self.clear()
+
+        for line in file_object:
+            line = line.rstrip('\n\r')
+            self.append_row(line)
+
+    def append_row(self, s):
+        self.rows.append(TextRow(s))
+
+    def clear(self):
+        self.rows = []
+
+def wctrim(s, max_w):
+    """Return pair s, w which is a string and the cell width of that string. The
+    string is trimmed so that w <= max_w. Characters which wcwidth() reports as
+    having negative width are removed.
+
+    """
+    assert max_w >= 0
+
+    # Common case: string needs no trimming
+    w = wcswidth(s)
+    if w >= 0 and w <= max_w:
+        return s, w
+
+    # Otherwise, walk character by character
+    w, chs = 0, []
+    for ch in s:
+        ch_w = wcwidth(ch)
+        if ch_w < 0:
+            continue
+
+        if w + ch_w > max_w:
+            return ''.join(chs), w
+
+        chs.append(ch)
+        w += ch_w
+    return ''.join(chs), w
 
 def draw_regions(win, regions, y=None, x=None, max_w=None):
     # pylint: disable=too-many-locals,too-many-branches
@@ -178,6 +306,27 @@ class FrameStyle(enum.Enum):
     SINGLE = 1
     DOUBLE = 2
 
+def draw_window_frame(
+        win, top, left, height, width,
+        title=None, frame_style=FrameStyle.SINGLE):
+    # pylint: disable=too-many-arguments
+
+    draw_frame(win, top, left, height, width, Style.WINDOW_BORDER, frame_style)
+
+    # Compute region left for window title
+    title_x, title_w = left + 2, width - 4
+
+    if title_w > 2:
+        title_text, title_text_w = wctrim(title, title_w-2)
+        title_right_pad = (title_w - title_text_w - 2) >> 1
+        title_left_pad = title_w - title_text_w - 2 - title_right_pad
+        draw_regions(win, [
+            (' ', Style.WINDOW_BORDER),
+            (title_text, Style.WINDOW_BORDER),
+            (' ', Style.WINDOW_BORDER),
+        ], y=top, x=title_x+title_left_pad, max_w=title_w)
+
+
 def draw_frame(win, y, x, h, w, style, frame_style=FrameStyle.SINGLE):
     # pylint: disable=too-many-arguments
     if frame_style is FrameStyle.SINGLE:
@@ -187,8 +336,8 @@ def draw_frame(win, y, x, h, w, style, frame_style=FrameStyle.SINGLE):
     else:
         raise TypeError('style is invalid')
 
-    # Cannot draw < 3x3 frames
-    if h < 3 or w < 3:
+    # Cannot draw < 2x3 frames
+    if h < 2 or w < 3:
         return
 
     draw_regions(win, [
