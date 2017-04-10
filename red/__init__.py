@@ -111,15 +111,18 @@ class Editor(Application):
         self.screen.bkgdset(' ', style_attr(Style.WINDOW_BACKGROUND))
         self.screen.erase()
 
+        # Draw frame for text view
         draw_window_frame(
             self.screen, 0, 0, self.n_lines - 1, self.n_cols,
             title='Untitled',
             frame_style=FrameStyle.DOUBLE)
 
+        # Draw text content
         ccy, ccx = self.document.cursor_cell
+        n_vis_lines = self.n_lines - 3
+        n_vis_cols = self.n_cols - 2
+
         if self.n_cols > 2:
-            n_vis_lines = self.n_lines - 3
-            n_vis_cols = self.n_cols - 2
 
             # Scroll the document so that the cursor is visible.
             if ccy < self.scroll_y:
@@ -142,6 +145,12 @@ class Editor(Application):
                     s_line = [('\u2591' * n_vis_cols, Style.HL_DRAGONS)]
 
                 draw_regions(self.screen, s_line,win_y, 1, self.n_cols-2)
+
+        # Draw scroll bar
+        if self.n_lines > 3 and n_vis_lines < self.document.maxy:
+            draw_v_scroll(
+                self.screen, self.n_cols-1, 1, self.n_lines-3,
+                ccy, n_vis_lines, self.document.maxy)
 
         self.draw_status()
 
@@ -252,9 +261,13 @@ class TextDocument:
             self.append_row(line)
 
     def get_styled_line(self, line):
-        if line < 0 or line >= len(self.lines):
+        if line < 0 or line >= self.maxy:
             return None
         return self.lines[line].rendered
+
+    @property
+    def maxy(self):
+        return len(self.lines)
 
     @property
     def cursor(self):
@@ -265,7 +278,7 @@ class TextDocument:
     def cursor_cell(self):
         """A pair giving the row and column index of the cell corresponding to
         the cursor."""
-        if self._cursor_row == len(self.lines):
+        if self._cursor_row == self.maxy:
             return self._cursor_row, 0
         row = self.lines[self._cursor_row]
         return self._cursor_row, row.index_to_x(self._cursor_idx)
@@ -276,7 +289,7 @@ class TextDocument:
 
     def move_end(self):
         cr, ci = self.cursor
-        if cr == len(self.lines):
+        if cr == self.maxy:
             return
         row = self.lines[cr]
         self.move_cursor(cr, len(row.text))
@@ -284,7 +297,7 @@ class TextDocument:
     def move_forward(self):
         """Advance the cursor one position."""
         cr, ci = self.cursor
-        if cr == len(self.lines):
+        if cr == self.maxy:
             return
         ci += 1
         row = self.lines[cr]
@@ -309,10 +322,10 @@ class TextDocument:
 
         """
         # constrain row
-        row = max(0, min(row, len(self.lines)))
+        row = max(0, min(row, self.maxy))
 
         # constrain index
-        if row == len(self.lines):
+        if row == self.maxy:
             index = 0
         else:
             index = max(0, min(index, len(self.lines[row].text)))
@@ -332,8 +345,8 @@ class TextDocument:
         """
         if y < 0:
             return 0, 0
-        if y >= len(self.lines):
-            return len(self.lines), 0
+        if y >= self.maxy:
+            return self.maxy, 0
         if x < 0:
             return y, 0
 
@@ -439,6 +452,7 @@ def setup_curses_colour_pairs():
     curses.init_pair(Style.WINDOW_BACKGROUND, p.LIGHT_GREY, p.BLUE)
     curses.init_pair(Style.STATUS_BAR, p.BLACK, p.LIGHT_GREY)
     curses.init_pair(Style.STATUS_BAR_HL, p.RED, p.LIGHT_GREY)
+    curses.init_pair(Style.SCROLL_BAR, p.BLUE, p.CYAN)
 
     curses.init_pair(Style.HL_NORMAL, p.LIGHT_GREY, p.BLUE)
     curses.init_pair(Style.HL_DRAGONS, p.DARK_GREY, p.BLUE)
@@ -450,10 +464,11 @@ class Style(enum.IntEnum):
     WINDOW_BACKGROUND = 2
     STATUS_BAR = 3
     STATUS_BAR_HL = 4
+    SCROLL_BAR = 5
 
-    HL_NORMAL = 5
-    HL_DRAGONS = 6
-    HL_WHITESPACE = 7
+    HL_NORMAL = 10
+    HL_DRAGONS = 11
+    HL_WHITESPACE = 12
 
 def style_attr(style):
     """Convert a style to a curses attribute value."""
@@ -528,3 +543,14 @@ def draw_frame(win, y, x, h, w, style, frame_style=FrameStyle.SINGLE):
     for side_y in range(y+1, y+h-1):
         draw_regions(win, [(vc, style)], y=side_y, x=x)
         draw_regions(win, [(vc, style)], y=side_y, x=x+w-1)
+
+def draw_v_scroll(win, x, y, height, value, page_size, total):
+    value = max(0, min(value, total))
+    page_size = max(0, min(page_size, total))
+    if height < 1:
+        return
+
+    # Draw bar itself
+    for bar_y in range(height):
+        ch, style = '\u2591', Style.SCROLL_BAR
+        draw_regions(win, [(ch, style)], y=bar_y + y, x=x)
