@@ -1,5 +1,6 @@
 from __future__ import unicode_literals, division
 
+import collections
 import curses
 from curses.ascii import ctrl
 import enum
@@ -21,6 +22,19 @@ def main():
 
     #app.add_timer(3.5, app.quit)
     app.run()
+
+class Style(enum.IntEnum):
+    """Styles for character cells."""
+    WINDOW_BORDER = 1
+    WINDOW_BACKGROUND = 2
+    STATUS_BAR = 3
+    STATUS_BAR_HL = 4
+    SCROLL_BAR = 5
+    WCHAR_RIGHT = 6
+
+    HL_NORMAL = 10
+    HL_DRAGONS = 11
+    HL_WHITESPACE = 12
 
 class Editor(Application):
     def __init__(self):
@@ -135,19 +149,23 @@ class Editor(Application):
             self.scroll_y = max(0, min(
                 self.scroll_y, self.document.maxy - n_vis_lines + 1))
 
-            #if ccx < self.scroll_x:
-            #    self.scroll_x = ccx
-            #elif ccx >= self.scroll_x + n_vis_cols:
-            #    self.scroll_x = max(0, ccx - n_vis_cols + 1)
+            if ccx < self.scroll_x:
+                self.scroll_x = ccx
+            elif ccx >= self.scroll_x + n_vis_cols:
+                self.scroll_x = max(0, ccx - n_vis_cols + 1)
 
             for doc_y in range(n_vis_lines):
                 win_y = 1 + doc_y
                 doc_row, _ = self.document.cell_to_cursor(
                     doc_y + self.scroll_y, self.scroll_x)
 
-                s_line = self.document.get_styled_line(self.scroll_y + doc_y)
-                if s_line is None:
+                line_cells = self.document.get_line_cells(self.scroll_y + doc_y)
+
+                if line_cells is None:
                     s_line = [('\u2591' * n_vis_cols, Style.HL_DRAGONS)]
+                else:
+                    s_line = normalise_styled_text(
+                        line_cells[self.scroll_x:self.scroll_x + n_vis_cols])
 
                 draw_regions(self.screen, s_line,win_y, 1, self.n_cols-2)
 
@@ -185,13 +203,21 @@ class Editor(Application):
 
 TAB_SIZE=8
 
+Cell = collections.namedtuple('Cell', 'ch style')
+
+# A special cell representing the right side of a two-column character cell
+WCHAR_RIGHT = Cell('<', Style.WCHAR_RIGHT)
+
 class TextRow:
     # pylint: disable=too-few-public-methods
     def __init__(self, s=''):
         self._text = s
-        self._rendered = None
         self._rendered_widths = []
         self._render()
+
+    @property
+    def cells(self):
+        return self._cells
 
     @property
     def text(self):
@@ -201,10 +227,6 @@ class TextRow:
     def text(self, value):
         self._text = value
         self._render()
-
-    @property
-    def rendered(self):
-        return self._rendered
 
     def index_to_x(self, idx):
         """Convert an index into text into a column co-ordinate."""
@@ -220,7 +242,7 @@ class TextRow:
         return len(self.text)
 
     def _render(self):
-        self._rendered = []
+        self._cells = []
         self._rendered_widths = []
         x = 0
         text_is_ws = self._text.isspace()
@@ -232,17 +254,19 @@ class TextRow:
             if ch == '\t':
                 tab_size = TAB_SIZE - (x % TAB_SIZE)
                 tab_chars = '\u203a' + (TAB_SIZE-1) * ' '
-                self._rendered.append((tab_chars[:tab_size], Style.HL_WHITESPACE))
+                self._cells.extend(
+                    Cell(c, Style.HL_WHITESPACE) for c in tab_chars)
                 self._rendered_widths.append(tab_size)
             elif text_is_ws and ch_w > 0:
-                self._rendered.append(('\u00b7 '[:ch_w], Style.HL_WHITESPACE))
+                self._cells.extend([Cell('\u00b7', Style.HL_WHITESPACE)] * ch_w)
                 self._rendered_widths.append(ch_w)
                 x += ch_w
             elif ch_w > 0:
-                self._rendered.append((ch, Style.HL_NORMAL))
+                self._cells.append(Cell(ch, Style.HL_NORMAL))
+                if ch_w == 2:
+                    self._cells.append(WCHAR_RIGHT)
                 self._rendered_widths.append(ch_w)
                 x += ch_w
-        self._rendered = normalise_styled_text(self._rendered)
 
 def normalise_styled_text(regions):
     norm = []
@@ -265,10 +289,10 @@ class TextDocument:
             line = line.rstrip('\n\r')
             self.append_row(line)
 
-    def get_styled_line(self, line):
+    def get_line_cells(self, line):
         if line < 0 or line >= self.maxy:
             return None
-        return self.lines[line].rendered
+        return self.lines[line].cells
 
     @property
     def maxy(self):
@@ -462,18 +486,6 @@ def setup_curses_colour_pairs():
     curses.init_pair(Style.HL_NORMAL, p.LIGHT_GREY, p.BLUE)
     curses.init_pair(Style.HL_DRAGONS, p.DARK_GREY, p.BLUE)
     curses.init_pair(Style.HL_WHITESPACE, p.CYAN, p.BLUE)
-
-class Style(enum.IntEnum):
-    """Styles for character cells."""
-    WINDOW_BORDER = 1
-    WINDOW_BACKGROUND = 2
-    STATUS_BAR = 3
-    STATUS_BAR_HL = 4
-    SCROLL_BAR = 5
-
-    HL_NORMAL = 10
-    HL_DRAGONS = 11
-    HL_WHITESPACE = 12
 
 def style_attr(style):
     """Convert a style to a curses attribute value."""
