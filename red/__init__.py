@@ -1,6 +1,9 @@
+from __future__ import unicode_literals, division
+
 import curses
 from curses.ascii import ctrl
 import enum
+from math import ceil
 import queue
 import time
 import sys
@@ -129,6 +132,8 @@ class Editor(Application):
                 self.scroll_y = ccy
             elif ccy >= self.scroll_y + n_vis_lines:
                 self.scroll_y = max(0, ccy - n_vis_lines + 1)
+            self.scroll_y = max(0, min(
+                self.scroll_y, self.document.maxy - n_vis_lines + 1))
 
             #if ccx < self.scroll_x:
             #    self.scroll_x = ccx
@@ -150,7 +155,7 @@ class Editor(Application):
         if self.n_lines > 3 and n_vis_lines < self.document.maxy:
             draw_v_scroll(
                 self.screen, self.n_cols-1, 1, self.n_lines-3,
-                ccy, n_vis_lines, self.document.maxy)
+                self.scroll_y, n_vis_lines, self.document.maxy)
 
         self.draw_status()
 
@@ -550,7 +555,13 @@ def draw_v_scroll(win, x, y, height, value, page_size, total):
     if height < 1:
         return
 
+    # Convert value and page_size rescaling s.t. total -> height
+    page_size = ceil(max(1, page_size * (height / total)))
+    value = min(value * (height / total), height - page_size)
+
     # Draw bar itself
     for bar_y in range(height):
         ch, style = '\u2591', Style.SCROLL_BAR
+        if bar_y >= value and bar_y < value + page_size:
+            ch = ' '
         draw_regions(win, [(ch, style)], y=bar_y + y, x=x)
