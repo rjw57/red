@@ -567,19 +567,35 @@ def draw_frame(win, y, x, h, w, style, frame_style=FrameStyle.SINGLE):
         draw_regions(win, [(vc, style)], y=side_y, x=x)
         draw_regions(win, [(vc, style)], y=side_y, x=x+w-1)
 
+class ScrollDirection(enum.Enum):
+    HORIZONTAL = 1
+    VERTICAL = 2
+
+def draw_h_scroll(win, x, y, height, value, page_size, total):
+    draw_scroll(
+        win, x, y, height, value, page_size, total, ScrollDirection.HORIZONTAL)
+
 def draw_v_scroll(win, x, y, height, value, page_size, total):
+    draw_scroll(
+        win, x, y, height, value, page_size, total, ScrollDirection.VERTICAL)
+
+def draw_scroll(win, x, y, extent, value, page_size, total, direction):
     value = max(0, min(value, total))
     page_size = max(0, min(page_size, total))
-    if height < 1:
+    if extent < 1:
         return
 
-    # Convert value and page_size rescaling s.t. total -> height
-    page_size = ceil(max(1, page_size * (height / total)))
-    value = min(value * (height / total), height - page_size)
+    # Convert value and page_size rescaling s.t. total -> extent
+    page_size = ceil(max(1, page_size * (extent / total)))
+    value = min(value * (extent / total), extent - page_size)
 
     # Draw bar itself
-    for bar_y in range(height):
+    for bar_idx in range(extent):
         ch, style = '\u2591', Style.SCROLL_BAR
-        if bar_y >= value and bar_y < value + page_size:
+        if bar_idx >= value and bar_idx < value + page_size:
             ch = ' '
-        draw_regions(win, [(ch, style)], y=bar_y + y, x=x)
+        if direction is ScrollDirection.VERTICAL:
+            draw_regions(win, [(ch, style)], y=bar_idx + y, x=x)
+        elif direction is ScrollDirection.VERTICAL:
+            draw_regions(win, [(ch, style)], x=bar_idx + x, y=y)
+
