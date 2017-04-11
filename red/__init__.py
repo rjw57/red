@@ -164,8 +164,13 @@ class Editor(Application):
                 if line_cells is None:
                     s_line = [('\u2591' * n_vis_cols, Style.HL_DRAGONS)]
                 else:
-                    s_line = normalise_styled_text(
-                        line_cells[self.scroll_x:self.scroll_x + n_vis_cols])
+                    s_line = []
+                    sx = self.scroll_x
+                    for cell in line_cells[sx:sx + n_vis_cols]:
+                        if cell is WCHAR_RIGHT and len(s_line) > 0:
+                            continue
+                        s_line.append(tuple(cell))
+                    s_line = normalise_styled_text(s_line)
 
                 draw_regions(self.screen, s_line,win_y, 1, self.n_cols-2)
 
@@ -482,6 +487,7 @@ def setup_curses_colour_pairs():
     curses.init_pair(Style.STATUS_BAR, p.BLACK, p.LIGHT_GREY)
     curses.init_pair(Style.STATUS_BAR_HL, p.RED, p.LIGHT_GREY)
     curses.init_pair(Style.SCROLL_BAR, p.BLUE, p.CYAN)
+    curses.init_pair(Style.WCHAR_RIGHT, p.CYAN, p.BLUE)
 
     curses.init_pair(Style.HL_NORMAL, p.LIGHT_GREY, p.BLUE)
     curses.init_pair(Style.HL_DRAGONS, p.DARK_GREY, p.BLUE)
