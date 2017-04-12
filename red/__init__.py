@@ -95,6 +95,7 @@ class Editor(Application):
 
             ctrl('h'): self.backspace,
             curses.KEY_BACKSPACE: self.backspace,
+            curses.KEY_DC: self.delete,
 
             curses.KEY_DOWN: self.move_down,
             curses.KEY_NPAGE: self.move_page_down,
@@ -180,6 +181,9 @@ class Editor(Application):
 
     def backspace(self):
         self.document.move_backward()
+        self.document.delete_character()
+
+    def delete(self):
         self.document.delete_character()
 
     ### File I/O
