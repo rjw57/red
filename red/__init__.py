@@ -5,10 +5,12 @@ import curses
 from curses.ascii import ctrl
 import enum
 from math import ceil
+import os
 import queue
 import time
 import sys
 
+from atomicwrites import atomic_write
 from wcwidth import wcwidth, wcswidth
 
 from .app import Application
@@ -17,8 +19,7 @@ def main():
     app = Editor()
 
     if len(sys.argv) > 1:
-        with open(sys.argv[1]) as f:
-            app.document = read_text_document(f)
+        app.open(sys.argv[1])
 
     #app.add_timer(3.5, app.quit)
     app.run()
@@ -82,10 +83,19 @@ class Editor(Application):
         self._redraw_scheduled = False
 
         self._document = TextDocument()
+        self._filename = None
 
         # A simple dictionary mapping key-presses to callables.
         self.key_bindings = {
             ctrl('q'): self.quit,
+            ctrl('s'): self.save,
+
+            '\n': self.insert_newline,
+            curses.KEY_ENTER: self.insert_newline,
+
+            ctrl('h'): self.backspace,
+            curses.KEY_BACKSPACE: self.backspace,
+
             curses.KEY_DOWN: self.move_down,
             curses.KEY_NPAGE: self.move_page_down,
             curses.KEY_UP: self.move_up,
@@ -158,6 +168,31 @@ class Editor(Application):
         sr = self.document.max_row
         self.scroll = CellLocation(sr, sc)
 
+    ### Editing
+
+    def insert_character(self, ch):
+        self.document.insert_character(ch)
+        self.document.move_forward()
+
+    def insert_newline(self):
+        self.document.insert_newline()
+        self.document.move_forward()
+
+    def backspace(self):
+        self.document.move_backward()
+        self.document.delete_character()
+
+    ### File I/O
+
+    def open(self, filename):
+        with open(filename) as f:
+            self.document.read_from_file(f)
+            self._filename = filename
+
+    def save(self):
+        with atomic_write(self._filename, overwrite=True) as f:
+            self.document.write_to_file(f)
+
     ### Event handlers
 
     def start(self):
@@ -172,6 +207,8 @@ class Editor(Application):
         handler = self.key_bindings.get(ch)
         if handler is not None:
             handler()
+        elif not isinstance(ch, int) and not curses.ascii.iscntrl(ch):
+            self.insert_character(ch)
 
         if self._update_desired_x:
             _, self.desired_x = self.document.cursor_cell
@@ -200,10 +237,10 @@ class Editor(Application):
         self.screen.erase()
 
         # Draw frame for text view
+        title = self._filename if self._filename is not None else 'Untitled'
         draw_window_frame(
             self.screen, 0, 0, self.n_lines - 1, self.n_cols,
-            title='Untitled',
-            frame_style=FrameStyle.DOUBLE)
+            title=title, frame_style=FrameStyle.DOUBLE)
 
         # Draw text content
         n_vis_rows = self.n_lines - 3
@@ -270,6 +307,7 @@ class Editor(Application):
             sr = cursor_cell.row
         elif cursor_cell.row >= sr + win_rows:
             sr = max(0, cursor_cell.row - win_rows + 1)
+        sr = min(sr, max(0, self.document.max_row - win_rows + 1))
 
         # update col
         if win_cols < 1:
@@ -278,6 +316,7 @@ class Editor(Application):
             sc = cursor_cell.col
         elif cursor_cell.col >= sc + win_cols:
             sc = max(0, cursor_cell.col - win_cols + 1)
+        sc = min(sc, max(0, self.document.max_col - win_cols + 1))
 
         # set new scroll position
         self.scroll = CellLocation(sr, sc)
@@ -331,6 +370,10 @@ class TextRow:
             w_sum += w
         return len(self.text)
 
+    def insert_character_at(self, idx, ch):
+        self._text = self._text[:idx] + ch + self._text[idx:]
+        self._render()
+
     def _render(self):
         self._cells = []
         self._rendered_widths = []
@@ -342,7 +385,7 @@ class TextRow:
                 tab_size = TAB_SIZE - (x % TAB_SIZE)
                 tab_chars = '\u203a' + (TAB_SIZE-1) * ' '
                 self._cells.extend(
-                    Cell(c, Style.HL_WHITESPACE) for c in tab_chars)
+                    Cell(c, Style.HL_WHITESPACE) for c in tab_chars[:tab_size])
                 self._rendered_widths.append(tab_size)
             elif text_is_ws and ch_w > 0:
                 self._cells.extend([Cell('\u00b7', Style.HL_WHITESPACE)] * ch_w)
@@ -355,18 +398,22 @@ class TextRow:
                 self._rendered_widths.append(ch_w)
                 x += ch_w
 
-def read_text_document(file_object):
-    doc = TextDocument()
-    for line in file_object:
-        line = line.rstrip('\n\r')
-        doc.append_line(line)
-    return doc
-
 class TextDocument:
     def __init__(self):
         self.lines = []
         self._cursor = DocumentLocation(0, 0)
         self._max_col = 0
+
+    def read_from_file(self, file_object):
+        self.clear()
+        for line in file_object:
+            line = line.rstrip('\n\r')
+            self.append_line(line)
+
+    def write_to_file(self, file_object):
+        for line in self.lines:
+            file_object.write(line.text)
+            file_object.write('\n')
 
     def get_cells_for_row(self, row_idx):
         if row_idx < 0 or row_idx >= self.max_row:
@@ -451,6 +498,44 @@ class TextDocument:
             index = max(0, min(index, len(self.lines[row].text)))
 
         self._cursor = DocumentLocation(row, index)
+
+    def delete_character(self):
+        if self.cursor.line == len(self.lines):
+            return
+        line = self.lines[self.cursor.line]
+        if self.cursor.char == len(line.text):
+            if self.cursor.line + 1 < len(self.lines):
+                # join lines
+                new_line = TextRow(
+                    line.text + self.lines[self.cursor.line+1].text)
+                self.lines[self.cursor.line:self.cursor.line+2] = [new_line]
+        else:
+            new_line = TextRow(
+                line.text[:self.cursor.char] + line.text[self.cursor.char+1:])
+            self.lines[self.cursor.line] = new_line
+
+    def insert_character(self, ch):
+        if ch in '\r\n':
+            self.insert_newline()
+        elif self.cursor.line == len(self.lines):
+            self.append_line(ch)
+        else:
+            line = self.lines[self.cursor.line]
+            line.insert_character_at(self.cursor.char, ch)
+            self._max_col = max(self._max_col, len(line.cells))
+
+    def insert_newline(self):
+        if self.cursor.line == len(self.lines):
+            self.append_line('')
+            return
+
+        # Split current line at cursor
+        line = self.lines[self.cursor.line]
+        new_lines = [
+            TextRow(line.text[:self.cursor.char]),
+            TextRow(line.text[self.cursor.char:]),
+        ]
+        self.lines[self.cursor.line:self.cursor.line+1] = new_lines
 
     def append_line(self, s):
         row = TextRow(s)
