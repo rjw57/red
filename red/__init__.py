@@ -18,7 +18,7 @@ def main():
 
     if len(sys.argv) > 1:
         with open(sys.argv[1]) as f:
-            app.document.read_from_file(f)
+            app.document = read_text_document(f)
 
     #app.add_timer(3.5, app.quit)
     app.run()
@@ -36,9 +36,52 @@ class Style(enum.IntEnum):
     HL_DRAGONS = 11
     HL_WHITESPACE = 12
 
+class TerminalPalette256(enum.IntEnum):
+    """A terminal palette suitable for 256 colour displays."""
+
+    BLACK = 16
+    BLUE = 19
+    GREEN = 34
+    CYAN = 37
+    RED = 124
+    MAGENTA = 127
+    BROWN = 130
+    LIGHT_GREY = 248
+    DARK_GREY = 240
+
+    BRIGHT_BLUE = 63
+    BRIGHT_GREEN = 83
+    BRIGHT_CYAN = 87
+    BRIGHT_RED = 203
+    BRIGHT_MAGENTA = 207
+    BRIGHT_YELLOW = 227
+    BRIGHT_WHITE = 231
+
+class FrameStyle(enum.Enum):
+    SINGLE = 1
+    DOUBLE = 2
+
+# The location of a cell within a window or on-screen. A cell is located by the
+# 0-based row and column indices.
+CellLocation = collections.namedtuple('CellLocation', 'row col')
+
+# A location within a text document. It is specified in terms of a 0-based line
+# and character index.
+DocumentLocation = collections.namedtuple('DocumentLocation', 'line char')
+
+Cell = collections.namedtuple('Cell', 'char style')
+
+# A special cell representing the right side of a two-column character cell
+WCHAR_RIGHT = Cell('<', Style.WCHAR_RIGHT)
+
+TAB_SIZE = 8
+
 class Editor(Application):
     def __init__(self):
         super(Editor, self).__init__()
+        self._redraw_scheduled = False
+
+        self._document = TextDocument()
 
         # A simple dictionary mapping key-presses to callables.
         self.key_bindings = {
@@ -54,16 +97,68 @@ class Editor(Application):
             curses.KEY_END: self.move_end,
         }
 
-        self.document = TextDocument()
-
-        # Scroll position measured in character cells
-        self.scroll_x, self.scroll_y = 0, 0
+        # The scroll position within the document is represented as the cell
+        # location of the upper-left corner
+        self.scroll = CellLocation(0, 0)
 
         # Desired cell cursor position after motion
         self.desired_x = 0
 
         # Flag indicating desired x should be updated
         self._update_desired_x = True
+
+    ### Properties
+
+    @property
+    def document(self):
+        return self._document
+
+    @document.setter
+    def document(self, value):
+        self._document = value
+        self.redraw()
+
+    ### Motion commands
+
+    def move_home(self):
+        self.document.move_home()
+
+    def move_end(self):
+        self.document.move_end()
+
+    def move_left(self):
+        self.document.move_backward()
+
+    def move_right(self):
+        self.document.move_forward()
+
+    def move_down(self):
+        cy, cx = self.document.cursor
+        self.document.move_cursor(DocumentLocation(cy+1, cx))
+        self._update_desired_x = False
+
+    def move_page_down(self):
+        for _ in range(max(1, self.n_lines-3)):
+            self.move_down()
+
+        _, sc = self.scroll
+        sr, _ = self.document.cursor_cell
+        self.scroll = CellLocation(sr, sc)
+
+    def move_up(self):
+        cy, cx = self.document.cursor
+        self.document.move_cursor(DocumentLocation(cy-1, cx))
+        self._update_desired_x = False
+
+    def move_page_up(self):
+        for _ in range(max(1, self.n_lines-3)):
+            self.move_up()
+
+        _, sc = self.scroll
+        sr = self.document.max_row
+        self.scroll = CellLocation(sr, sc)
+
+    ### Event handlers
 
     def start(self):
         setup_curses_colour_pairs()
@@ -82,45 +177,21 @@ class Editor(Application):
             _, self.desired_x = self.document.cursor_cell
         else:
             cr, _ = self.document.cursor_cell
-            self.document.move_cursor(*self.document.cell_to_cursor(
-                cr, self.desired_x))
+            self.document.move_cursor(self.document.cell_to_cursor(
+                CellLocation(cr, self.desired_x)))
 
         self.redraw()
 
-    def move_home(self):
-        self.document.move_home()
-
-    def move_end(self):
-        self.document.move_end()
-
-    def move_left(self):
-        self.document.move_backward()
-
-    def move_right(self):
-        self.document.move_forward()
-
-    def move_down(self):
-        cy, cx = self.document.cursor
-        self.document.move_cursor(cy+1, cx)
-        self._update_desired_x = False
-
-    def move_page_down(self):
-        for _ in range(max(1, self.n_lines-3)):
-            self.move_down()
-        self.scroll_y, _ = self.document.cursor_cell
-
-    def move_up(self):
-        cy, cx = self.document.cursor
-        self.document.move_cursor(cy-1, cx)
-        self._update_desired_x = False
-
-    def move_page_up(self):
-        for _ in range(max(1, self.n_lines-3)):
-            self.move_up()
-        self.scroll_y = len(self.document.lines)
-
     def redraw(self):
+        if not self._redraw_scheduled:
+            self._redraw_scheduled = True
+            self.add_timer(0, self._redraw)
+
+    def _redraw(self):
         """Redraw the screen."""
+        # Reset redraw schedule flag
+        self._redraw_scheduled = False
+
         # Move cursor to be within text document bounds
         curses.curs_set(0)
         self.screen.leaveok(1)
@@ -135,62 +206,78 @@ class Editor(Application):
             frame_style=FrameStyle.DOUBLE)
 
         # Draw text content
-        ccy, ccx = self.document.cursor_cell
         n_vis_lines = self.n_lines - 3
         n_vis_cols = self.n_cols - 2
 
+        # Update scroll position
+        self._update_scroll(self.document.cursor_cell, n_vis_lines, n_vis_cols)
+        ccy, ccx = self.document.cursor_cell
+
         if self.n_cols > 2:
-
-            # Scroll the document so that the cursor is visible.
-            if ccy < self.scroll_y:
-                self.scroll_y = ccy
-            elif ccy >= self.scroll_y + n_vis_lines:
-                self.scroll_y = max(0, ccy - n_vis_lines + 1)
-            self.scroll_y = max(0, min(
-                self.scroll_y, self.document.maxy - n_vis_lines + 1))
-
-            if ccx < self.scroll_x:
-                self.scroll_x = ccx
-            elif ccx >= self.scroll_x + n_vis_cols:
-                self.scroll_x = max(0, ccx - n_vis_cols + 1)
-
             for doc_y in range(n_vis_lines):
                 win_y = 1 + doc_y
-                doc_row, _ = self.document.cell_to_cursor(
-                    doc_y + self.scroll_y, self.scroll_x)
-
-                line_cells = self.document.get_line_cells(self.scroll_y + doc_y)
+                line_cells = self.document.get_cells_for_row(self.scroll.row + doc_y)
 
                 if line_cells is None:
                     s_line = [('\u2591' * n_vis_cols, Style.HL_DRAGONS)]
                 else:
                     s_line = []
-                    sx = self.scroll_x
+                    sx = self.scroll.col
                     for cell in line_cells[sx:sx + n_vis_cols]:
                         if cell is WCHAR_RIGHT and len(s_line) > 0:
                             continue
-                        s_line.append(tuple(cell))
+                        s_line.append((cell.char, cell.style))
                     s_line = normalise_styled_text(s_line)
 
-                draw_regions(self.screen, s_line,win_y, 1, self.n_cols-2)
+                draw_regions(self.screen, s_line, win_y, 1, self.n_cols-2)
 
         # Draw scroll bar
-        if self.n_lines > 3 and n_vis_lines < self.document.maxy:
+        if self.n_lines > 3 and n_vis_lines < self.document.max_row:
             draw_v_scroll(
                 self.screen, self.n_cols-1, 1, self.n_lines-3,
-                self.scroll_y, n_vis_lines, self.document.maxy)
+                self.scroll.row, n_vis_lines, self.document.max_row)
 
-        self.draw_status()
+        self._draw_status()
 
         # Calculate on-screen cursor pos
-        scy = ccy - self.scroll_y + 1
-        scx = ccx - self.scroll_x + 1
+        scy = ccy - self.scroll.row + 1
+        scx = ccx - self.scroll.col + 1
         if scx >= 1 and scx < self.n_cols - 1 and scy >= 1 and scy < self.n_lines - 1:
             self.screen.leaveok(0)
             self.screen.move(scy, scx)
             curses.curs_set(1)
 
-    def draw_status(self):
+    ### Internal
+
+    def _update_scroll(self, cursor_cell, win_rows, win_cols):
+        """Update the current scroll position so that the cursor at the
+        CellLocation cursor_cell is visible assuming the window is win_rows tall
+        and win_cols wide.
+
+        """
+        # current scroll position
+        sr, sc = self.scroll
+
+        # update row
+        if win_rows < 1:
+            sr = 0
+        elif cursor_cell.row < sr:
+            sr = cursor_cell.row
+        elif cursor_cell.row >= sr + win_rows:
+            sr = max(0, cursor_cell.row - win_rows + 1)
+
+        # update col
+        if win_cols < 1:
+            sc = 0
+        elif cursor_cell.col < sc:
+            sc = cursor_cell.col
+        elif cursor_cell.col >= sc + win_cols:
+            sc = max(0, cursor_cell.col - win_cols + 1)
+
+        # set new scroll position
+        self.scroll = CellLocation(sr, sc)
+
+    def _draw_status(self):
         if self.n_lines < 1:
             return
 
@@ -205,13 +292,6 @@ class Editor(Application):
             ('Ctrl-Q', Style.STATUS_BAR_HL),
             (' Quit', Style.STATUS_BAR),
         ], y=self.n_lines-1, x=0)
-
-TAB_SIZE=8
-
-Cell = collections.namedtuple('Cell', 'ch style')
-
-# A special cell representing the right side of a two-column character cell
-WCHAR_RIGHT = Cell('<', Style.WCHAR_RIGHT)
 
 class TextRow:
     # pylint: disable=too-few-public-methods
@@ -233,11 +313,11 @@ class TextRow:
         self._text = value
         self._render()
 
-    def index_to_x(self, idx):
+    def char_to_cell(self, idx):
         """Convert an index into text into a column co-ordinate."""
         return sum(self._rendered_widths[:idx])
 
-    def x_to_index(self, x):
+    def cell_to_char(self, x):
         """Convert a column co-ordinate to an index into text."""
         w_sum = 0
         for idx, w in enumerate(self._rendered_widths):
@@ -252,9 +332,6 @@ class TextRow:
         x = 0
         text_is_ws = self._text.isspace()
         for ch in self._text:
-            if not ch.isspace():
-                non_ws_encountered = True
-
             ch_w = wcwidth(ch)
             if ch == '\t':
                 tab_size = TAB_SIZE - (x % TAB_SIZE)
@@ -273,6 +350,119 @@ class TextRow:
                 self._rendered_widths.append(ch_w)
                 x += ch_w
 
+def read_text_document(file_object):
+    doc = TextDocument()
+    for line in file_object:
+        line = line.rstrip('\n\r')
+        doc.append_line(line)
+    return doc
+
+class TextDocument:
+    def __init__(self):
+        self.lines = []
+        self._cursor = DocumentLocation(0, 0)
+
+    def get_cells_for_row(self, row_idx):
+        if row_idx < 0 or row_idx >= self.max_row:
+            return None
+        return self.lines[row_idx].cells
+
+    @property
+    def max_row(self):
+        return len(self.lines)
+
+    @property
+    def cursor(self):
+        """A DocumentLocation giving the location of the cursor."""
+        return self._cursor
+
+    @property
+    def cursor_cell(self):
+        """A CellLocation giving the row and column index of the cell
+        corresponding to the cursor.
+
+        """
+        if self._cursor.line == self.max_row:
+            return CellLocation(self._cursor.line, 0)
+        row = self.lines[self._cursor.line]
+        return CellLocation(self._cursor.line, row.char_to_cell(self._cursor.char))
+
+    def move_home(self):
+        cr, _ = self.cursor
+        self.move_cursor(DocumentLocation(cr, 0))
+
+    def move_end(self):
+        cr, _ = self.cursor
+        if cr == self.max_row:
+            return
+        row = self.lines[cr]
+        self.move_cursor(DocumentLocation(cr, len(row.text)))
+
+    def move_forward(self):
+        """Advance the cursor one position."""
+        cr, ci = self.cursor
+        if cr == self.max_row:
+            return
+        row = self.lines[cr]
+
+        ci += 1
+        if ci > len(row.text):
+            ci, cr = 0, cr + 1
+
+        self.move_cursor(DocumentLocation(cr, ci))
+
+    def move_backward(self):
+        """Advance the cursor one position."""
+        cr, ci = self.cursor
+        if cr == 0 and ci == 0 or cr - 1 >= len(self.lines):
+            return
+
+        row = self.lines[cr-1]
+        ci -= 1
+        if ci < 0 and cr > 0:
+            ci, cr = len(row.text), cr - 1
+
+        self.move_cursor(DocumentLocation(cr, ci))
+
+    def move_cursor(self, doc_location):
+        """Move the cursor to a specific row and index within that row. The
+        cursor is constrained to the valid set of input points for the document.
+
+        """
+        row, index = doc_location
+
+        # constrain row
+        row = max(0, min(row, self.max_row))
+
+        # constrain index
+        if row == self.max_row:
+            index = 0
+        else:
+            index = max(0, min(index, len(self.lines[row].text)))
+
+        self._cursor = DocumentLocation(row, index)
+
+    def append_line(self, s):
+        self.lines.append(TextRow(s))
+
+    def clear(self):
+        self.lines = []
+
+    def cell_to_cursor(self, cell_location):
+        """Convert a CellLocation to the nearest DocumentLocation."""
+
+        y, x = cell_location
+
+        if y < 0:
+            return 0, 0
+        if y >= self.max_row:
+            return self.max_row, 0
+        if x < 0:
+            return y, 0
+
+        row = self.lines[y]
+        return DocumentLocation(y, row.cell_to_char(x))
+
 def normalise_styled_text(regions):
     norm = []
     for txt, style in regions:
@@ -281,111 +471,6 @@ def normalise_styled_text(regions):
         else:
             norm[-1] = (norm[-1][0] + txt, norm[-1][1])
     return norm
-
-class TextDocument:
-    def __init__(self):
-        self.lines = []
-        self._cursor_row, self._cursor_idx = 0, 0
-
-    def read_from_file(self, file_object):
-        self.clear()
-
-        for line in file_object:
-            line = line.rstrip('\n\r')
-            self.append_row(line)
-
-    def get_line_cells(self, line):
-        if line < 0 or line >= self.maxy:
-            return None
-        return self.lines[line].cells
-
-    @property
-    def maxy(self):
-        return len(self.lines)
-
-    @property
-    def cursor(self):
-        """A pair giving the row and index into that row of the cursor."""
-        return self._cursor_row, self._cursor_idx
-
-    @property
-    def cursor_cell(self):
-        """A pair giving the row and column index of the cell corresponding to
-        the cursor."""
-        if self._cursor_row == self.maxy:
-            return self._cursor_row, 0
-        row = self.lines[self._cursor_row]
-        return self._cursor_row, row.index_to_x(self._cursor_idx)
-
-    def move_home(self):
-        cr, ci = self.cursor
-        self.move_cursor(cr, 0)
-
-    def move_end(self):
-        cr, ci = self.cursor
-        if cr == self.maxy:
-            return
-        row = self.lines[cr]
-        self.move_cursor(cr, len(row.text))
-
-    def move_forward(self):
-        """Advance the cursor one position."""
-        cr, ci = self.cursor
-        if cr == self.maxy:
-            return
-        ci += 1
-        row = self.lines[cr]
-        if ci > len(row.text):
-            ci, cr = 0, cr + 1
-        self.move_cursor(cr, ci)
-
-    def move_backward(self):
-        """Advance the cursor one position."""
-        cr, ci = self.cursor
-        if cr == 0 and ci == 0:
-            return
-        ci -= 1
-        if ci < 0 and cr > 0:
-            row = self.lines[cr-1]
-            ci, cr = len(row.text), cr - 1
-        self.move_cursor(cr, ci)
-
-    def move_cursor(self, row, index):
-        """Move the cursor to a specific row and index within that row. The
-        cursor is constrained to the valid set of input points for the document.
-
-        """
-        # constrain row
-        row = max(0, min(row, self.maxy))
-
-        # constrain index
-        if row == self.maxy:
-            index = 0
-        else:
-            index = max(0, min(index, len(self.lines[row].text)))
-
-        self._cursor_row, self._cursor_idx = row, index
-
-    def append_row(self, s):
-        self.lines.append(TextRow(s))
-
-    def clear(self):
-        self.lines = []
-
-    def cell_to_cursor(self, y, x):
-        """Convert cell co-ordinate to nearest cursor position as a row, index
-        pair.
-
-        """
-        if y < 0:
-            return 0, 0
-        if y >= self.maxy:
-            return self.maxy, 0
-        if x < 0:
-            return y, 0
-
-        row = self.lines[y]
-        return y, row.x_to_index(x)
 
 def wctrim(s, max_w):
     """Return pair s, w which is a string and the cell width of that string. The
@@ -415,7 +500,7 @@ def wctrim(s, max_w):
     return ''.join(chs), w
 
 def draw_regions(win, regions, y=None, x=None, max_w=None, starting_at=None):
-    # pylint: disable=too-many-locals,too-many-branches
+    # pylint: disable=too-many-locals,too-many-branches,too-many-arguments
     # Get cursor position and window size
     cy, cx = win.getyx()
     nl, nc = win.getmaxyx()
@@ -438,7 +523,6 @@ def draw_regions(win, regions, y=None, x=None, max_w=None, starting_at=None):
         return
 
     # Otherwise, let's go
-    region_x = 0
     for region in regions:
         text, style = region
         attr = style_attr(style)
@@ -497,31 +581,6 @@ def style_attr(style):
     """Convert a style to a curses attribute value."""
     return curses.color_pair(style)
 
-class TerminalPalette256(enum.IntEnum):
-    """A terminal palette suitable for 256 colour displays."""
-
-    BLACK = 16
-    BLUE = 19
-    GREEN = 34
-    CYAN = 37
-    RED = 124
-    MAGENTA = 127
-    BROWN = 130
-    LIGHT_GREY = 248
-    DARK_GREY = 240
-
-    BRIGHT_BLUE = 63
-    BRIGHT_GREEN = 83
-    BRIGHT_CYAN = 87
-    BRIGHT_RED = 203
-    BRIGHT_MAGENTA = 207
-    BRIGHT_YELLOW = 227
-    BRIGHT_WHITE = 231
-
-class FrameStyle(enum.Enum):
-    SINGLE = 1
-    DOUBLE = 2
-
 def draw_window_frame(
         win, top, left, height, width,
         title=None, frame_style=FrameStyle.SINGLE):
@@ -572,14 +631,17 @@ class ScrollDirection(enum.Enum):
     VERTICAL = 2
 
 def draw_h_scroll(win, x, y, height, value, page_size, total):
+    # pylint:disable=too-many-arguments
     draw_scroll(
         win, x, y, height, value, page_size, total, ScrollDirection.HORIZONTAL)
 
 def draw_v_scroll(win, x, y, height, value, page_size, total):
+    # pylint:disable=too-many-arguments
     draw_scroll(
         win, x, y, height, value, page_size, total, ScrollDirection.VERTICAL)
 
 def draw_scroll(win, x, y, extent, value, page_size, total, direction):
+    # pylint:disable=too-many-arguments
     value = max(0, min(value, total))
     page_size = max(0, min(page_size, total))
     if extent < 1:
@@ -598,4 +660,3 @@ def draw_scroll(win, x, y, extent, value, page_size, total, direction):
             draw_regions(win, [(ch, style)], y=bar_idx + y, x=x)
         elif direction is ScrollDirection.VERTICAL:
             draw_regions(win, [(ch, style)], x=bar_idx + x, y=y)
-
