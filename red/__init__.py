@@ -206,15 +206,15 @@ class Editor(Application):
             frame_style=FrameStyle.DOUBLE)
 
         # Draw text content
-        n_vis_lines = self.n_lines - 3
+        n_vis_rows = self.n_lines - 3
         n_vis_cols = self.n_cols - 2
 
         # Update scroll position
-        self._update_scroll(self.document.cursor_cell, n_vis_lines, n_vis_cols)
+        self._update_scroll(self.document.cursor_cell, n_vis_rows, n_vis_cols)
         ccy, ccx = self.document.cursor_cell
 
         if self.n_cols > 2:
-            for doc_y in range(n_vis_lines):
+            for doc_y in range(n_vis_rows):
                 win_y = 1 + doc_y
                 line_cells = self.document.get_cells_for_row(self.scroll.row + doc_y)
 
@@ -231,11 +231,16 @@ class Editor(Application):
 
                 draw_regions(self.screen, s_line, win_y, 1, self.n_cols-2)
 
-        # Draw scroll bar
-        if self.n_lines > 3 and n_vis_lines < self.document.max_row:
+        # Draw scroll bars
+        if self.n_lines > 3 and n_vis_rows < self.document.max_row:
             draw_v_scroll(
                 self.screen, self.n_cols-1, 1, self.n_lines-3,
-                self.scroll.row, n_vis_lines, self.document.max_row)
+                self.scroll.row, n_vis_rows, self.document.max_row)
+
+        if self.n_cols > 3 and n_vis_cols < self.document.max_col:
+            draw_h_scroll(
+                self.screen, 1, self.n_lines-2, self.n_cols-2,
+                self.scroll.col, n_vis_cols, self.document.max_col)
 
         self._draw_status()
 
@@ -361,6 +366,7 @@ class TextDocument:
     def __init__(self):
         self.lines = []
         self._cursor = DocumentLocation(0, 0)
+        self._max_col = 0
 
     def get_cells_for_row(self, row_idx):
         if row_idx < 0 or row_idx >= self.max_row:
@@ -370,6 +376,10 @@ class TextDocument:
     @property
     def max_row(self):
         return len(self.lines)
+
+    @property
+    def max_col(self):
+        return self._max_col
 
     @property
     def cursor(self):
@@ -443,7 +453,9 @@ class TextDocument:
         self._cursor = DocumentLocation(row, index)
 
     def append_line(self, s):
-        self.lines.append(TextRow(s))
+        row = TextRow(s)
+        self._max_col = max(self._max_col, len(row.cells))
+        self.lines.append(row)
 
     def clear(self):
         self.lines = []
@@ -630,10 +642,10 @@ class ScrollDirection(enum.Enum):
     HORIZONTAL = 1
     VERTICAL = 2
 
-def draw_h_scroll(win, x, y, height, value, page_size, total):
+def draw_h_scroll(win, x, y, width, value, page_size, total):
     # pylint:disable=too-many-arguments
     draw_scroll(
-        win, x, y, height, value, page_size, total, ScrollDirection.HORIZONTAL)
+        win, x, y, width, value, page_size, total, ScrollDirection.HORIZONTAL)
 
 def draw_v_scroll(win, x, y, height, value, page_size, total):
     # pylint:disable=too-many-arguments
@@ -658,5 +670,7 @@ def draw_scroll(win, x, y, extent, value, page_size, total, direction):
             ch = ' '
         if direction is ScrollDirection.VERTICAL:
             draw_regions(win, [(ch, style)], y=bar_idx + y, x=x)
-        elif direction is ScrollDirection.VERTICAL:
+        elif direction is ScrollDirection.HORIZONTAL:
             draw_regions(win, [(ch, style)], x=bar_idx + x, y=y)
+        else:
+            assert False # should never happen
