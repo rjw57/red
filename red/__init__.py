@@ -338,7 +338,9 @@ class Editor(Application):
         draw_regions(self.screen, [
             (' ', Style.STATUS_BAR),
             ('Ctrl-Q', Style.STATUS_BAR_HL),
-            (' Quit', Style.STATUS_BAR),
+            (' Quit ', Style.STATUS_BAR),
+            ('Ctrl-S', Style.STATUS_BAR_HL),
+            (' Save', Style.STATUS_BAR),
         ], y=self.n_lines-1, x=0)
 
 class TextRow:
