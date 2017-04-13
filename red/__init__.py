@@ -432,6 +432,9 @@ def setup_curses_colour_pairs():
     curses.init_pair(Style.HL_DRAGONS, p.DARK_GREY, p.BLUE)
     curses.init_pair(Style.HL_WHITESPACE, p.CYAN, p.BLUE)
     curses.init_pair(Style.HL_TAB, p.BLUE, p.LIGHT_GREY)
+    curses.init_pair(Style.HL_ERROR, p.BRIGHT_WHITE, p.RED)
+
+    curses.init_pair(Style.HL_KEYWORD, p.BRIGHT_WHITE, p.BLUE)
 
 def style_attr(style):
     """Convert a style to a curses attribute value."""

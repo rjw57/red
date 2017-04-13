@@ -1,7 +1,10 @@
 import collections
 import enum
 
+import pkg_resources
 from wcwidth import wcwidth, wcswidth
+
+from .syntax import LanguageLexer, TOK_KEYWORD, TOK_NORMAL
 
 class Style(enum.IntEnum):
     """Styles for character cells."""
@@ -16,6 +19,9 @@ class Style(enum.IntEnum):
     HL_DRAGONS = 11
     HL_WHITESPACE = 12
     HL_TAB = 13
+    HL_ERROR = 14
+
+    HL_KEYWORD = 15
 
 # The location of a cell within a window or on-screen. A cell is located by the
 # 0-based row and column indices.
@@ -35,6 +41,11 @@ TAB_SIZE = 8
 class TextDocument:
     def __init__(self):
         self.lines = []
+        self._lexer = LanguageLexer()
+        self._lexer.read_spec(pkg_resources.resource_stream(
+            __name__, 'lang/def.lang'), 'def')
+        self._lexer.read_spec(pkg_resources.resource_stream(
+            __name__, 'lang/python.lang'), 'python')
         self._cursor = DocumentLocation(0, 0)
         self._max_col = 0
 
@@ -141,10 +152,12 @@ class TextDocument:
             if self.cursor.line + 1 < len(self.lines):
                 # join lines
                 new_line = TextLine(
+                    self._lexer,
                     line.text + self.lines[self.cursor.line+1].text)
                 self.lines[self.cursor.line:self.cursor.line+2] = [new_line]
         else:
             new_line = TextLine(
+                self._lexer,
                 line.text[:self.cursor.char] + line.text[self.cursor.char+1:])
             self.lines[self.cursor.line] = new_line
 
@@ -166,13 +179,13 @@ class TextDocument:
         # Split current line at cursor
         line = self.lines[self.cursor.line]
         new_lines = [
-            TextLine(line.text[:self.cursor.char]),
-            TextLine(line.text[self.cursor.char:]),
+            TextLine(self._lexer, line.text[:self.cursor.char]),
+            TextLine(self._lexer, line.text[self.cursor.char:]),
         ]
         self.lines[self.cursor.line:self.cursor.line+1] = new_lines
 
     def append_line(self, s):
-        row = TextLine(s)
+        row = TextLine(self._lexer, s)
         self._max_col = max(self._max_col, len(row.cells))
         self.lines.append(row)
 
@@ -196,8 +209,9 @@ class TextDocument:
 
 class TextLine:
     # pylint: disable=too-few-public-methods
-    def __init__(self, s=''):
+    def __init__(self, lexer, s=''):
         self._text = s
+        self._lexer = lexer
         self._rendered_widths = []
         self._render()
 
@@ -235,6 +249,8 @@ class TextLine:
         self._cells = []
         self._rendered_widths = []
 
+        lex_ids = self._lexer.lex(self._text)
+
         # What character do we use to represent whitespace?
         ws_char = '\u00b7' if self._text.isspace() else ' '
 
@@ -263,9 +279,17 @@ class TextLine:
                 cell_text = self._text[idx:end_idx]
                 w = wcswidth(cell_text)
                 if w > 0:
-                    self._cells.append(Cell(cell_text, Style.HL_NORMAL))
+                    self._cells.append(Cell(
+                        cell_text, lex_id_to_style(lex_ids[idx])))
                     if w == 2:
                         self._cells.append(WCHAR_RIGHT)
                     self._rendered_widths.append(w)
                     x += w
                 idx = end_idx
+
+def lex_id_to_style(lex_id):
+    if lex_id == TOK_KEYWORD:
+        return Style.HL_KEYWORD
+    elif lex_id == TOK_NORMAL:
+        return Style.HL_NORMAL
+    return Style.HL_ERROR

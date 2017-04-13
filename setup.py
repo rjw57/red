@@ -10,6 +10,9 @@ setup(
     name='red',
     install_requires=INSTALL_REQUIRES,
     packages=find_packages(),
+    package_data={
+        'red': ['lang/*.lang'],
+    },
     entry_points={
         'console_scripts': [
             'red=red:main',
