@@ -1,7 +1,7 @@
 import collections
 import enum
 
-from wcwidth import wcwidth
+from wcwidth import wcwidth, wcswidth
 
 class Style(enum.IntEnum):
     """Styles for character cells."""
@@ -15,6 +15,7 @@ class Style(enum.IntEnum):
     HL_NORMAL = 10
     HL_DRAGONS = 11
     HL_WHITESPACE = 12
+    HL_TAB = 13
 
 # The location of a cell within a window or on-screen. A cell is located by the
 # 0-based row and column indices.
@@ -233,23 +234,38 @@ class TextLine:
     def _render(self):
         self._cells = []
         self._rendered_widths = []
-        x = 0
-        text_is_ws = self._text.isspace()
-        for ch in self._text:
-            ch_w = wcwidth(ch)
-            if ch == '\t':
+
+        # What character do we use to represent whitespace?
+        ws_char = '\u00b7' if self._text.isspace() else ' '
+
+        idx, x = 0, 0
+        while idx < len(self._text):
+            if self._text[idx] == '\t':
+                # Handle tab
                 tab_size = TAB_SIZE - (x % TAB_SIZE)
-                tab_chars = '\u203a' + (TAB_SIZE-1) * ' '
+                tab_chars = '\u203a' + (TAB_SIZE-1) * ws_char
                 self._cells.extend(
-                    Cell(c, Style.HL_WHITESPACE) for c in tab_chars[:tab_size])
+                    Cell(c, Style.HL_TAB) for c in tab_chars[:tab_size])
                 self._rendered_widths.append(tab_size)
-            elif text_is_ws and ch_w > 0:
-                self._cells.extend([Cell('\u00b7', Style.HL_WHITESPACE)] * ch_w)
-                self._rendered_widths.append(ch_w)
-                x += ch_w
-            elif ch_w > 0:
-                self._cells.append(Cell(ch, Style.HL_NORMAL))
-                if ch_w == 2:
-                    self._cells.append(WCHAR_RIGHT)
-                self._rendered_widths.append(ch_w)
-                x += ch_w
+                idx += 1
+            elif self._text[idx].isspace():
+                w = wcwidth(self._text[idx])
+                if w > 0:
+                    self._cells.extend([Cell(ws_char, Style.HL_WHITESPACE)] * w)
+                    self._rendered_widths.append(w)
+                    x += w
+                idx += len(self._text[idx])
+            else:
+                # Handle normal text
+                end_idx = idx + 1
+                while end_idx < len(self._text) and wcwidth(self._text[end_idx]) == 0:
+                    end_idx += 1
+                cell_text = self._text[idx:end_idx]
+                w = wcswidth(cell_text)
+                if w > 0:
+                    self._cells.append(Cell(cell_text, Style.HL_NORMAL))
+                    if w == 2:
+                        self._cells.append(WCHAR_RIGHT)
+                    self._rendered_widths.append(w)
+                    x += w
+                idx = end_idx
