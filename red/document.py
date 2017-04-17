@@ -3,7 +3,7 @@ import enum
 
 from wcwidth import wcwidth, wcswidth
 
-from .syntax import lex
+from .syntax import lex, start_lang
 
 class Style(enum.IntEnum):
     """Styles for character cells."""
@@ -240,7 +240,7 @@ class TextLine:
         self._cells = []
         self._rendered_widths = []
 
-        lex_ids = lex(self._text)
+        lex_ids, _ = lex(self._text, start_lang('python'))
 
         # What character do we use to represent whitespace?
         ws_char = '\u00b7' if self._text.isspace() else ' '
