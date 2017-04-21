@@ -16,6 +16,7 @@ setup(
     entry_points={
         'console_scripts': [
             'red=red:main',
+            'red_tokenise=red.language:tool',
         ],
     },
 )
